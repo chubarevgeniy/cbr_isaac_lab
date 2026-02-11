@@ -101,8 +101,9 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # initial tilt angle variation
     initial_tilt_angle_variation = 1.0/180 * math.pi  # 20 degrees in radians
-    thigh_length = 0.18
-    torso_length = 0.16
+    head_offset_from_torso_loc = [0.04,0.16,0]
+    left_foot_offset_from_shin_loc = [0.14,0,0.08]
+    right_foot_offset_from_shin_loc = [0.14,0,-0.08]
 
     # - action scale
     action_hip_scale = 196.0 / 2 /180 * math.pi  #
@@ -111,6 +112,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     rew_scale_alive = 1.0
     # - reset states/conditions
     termination_rod_angle = 8.9 * math.pi / 180.0
+    termination_head_height = 0.1
 
     #commands settings
     command_info_cfg = {

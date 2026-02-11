@@ -7,16 +7,12 @@ from __future__ import annotations
 
 import math
 import torch
-from collections.abc import Sequence
 
 from isaaclab.markers.visualization_markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.sensors.contact_sensor.contact_sensor import ContactSensor
-from isaaclab.sensors.contact_sensor.contact_sensor_cfg import ContactSensorCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.terrains.terrain_importer import TerrainImporter
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import sample_uniform
 import isaaclab.utils.math as math_utils  # <-- add import for math utils
@@ -40,19 +36,24 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.body_idx,_ = self.robot.find_bodies('body')
         self.left_hip_idx,_ = self.robot.find_bodies('left_hip')
         self.right_hip_idx,_ = self.robot.find_bodies('right_hip')
+        self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
+        self.right_knee_idx,_ = self.robot.find_bodies('right_shin')
 
+        # Pre-compute indices for observations to avoid fragile slicing
+        self.obs_joint_pos_indices = torch.tensor(
+            [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
+            device=self.device
+        )
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
 
         # Initialize command handling
         self.command = torch.zeros((self.cfg.scene.num_envs,5), device=self.device)
         self.command[:,[0,1,2,3,4]] = get_command(device = self.device,sit_time=self.cfg.command_info_cfg['sit_min']//2)
-        # Setup visualization for commands. Assume marker index 1 ("command") is the red arrow.
-        # self.visualization_markers = define_markers()
-        # self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
-        # self.marker_offset[:,-1] = 0.5  # Offset for visualization
-        # self._sample_commands()
-        # self.previous_actions = torch.zeros((self.cfg.scene.num_envs, self.cfg.action_space), device=self.device)
+        # Setup visualization for commands.
+        self.visualization_markers = define_markers()
+        self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
+        self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
     def _setup_scene(self):
         # Initialize the robot
@@ -110,73 +111,110 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions):
         self.actions = self._clip_and_scale_actions(actions.clone())
-        # self._visualize_markers()
+        self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
-        left_hip_loc = self.robot.data.body_state_w[:, self.left_hip_idx[0], :3]
-        left_hip_rots = self.robot.data.body_state_w[:, self.left_hip_idx[0], 3:7]
-        leg_offset = torch.zeros_like(left_hip_loc, device=left_hip_loc.device) + torch.tensor([0.0, self.cfg.thigh_length, 0.0], device=left_hip_loc.device)
-        left_knee_loc = left_hip_loc + math_utils.quat_apply(left_hip_rots, leg_offset)
+        left_knee_loc = self.robot.data.body_link_state_w[:, self.left_knee_idx[0], :3]
         return left_knee_loc
 
     def _get_right_knee_location(self) -> torch.Tensor:
-        right_hip_loc = self.robot.data.body_state_w[:, self.right_hip_idx[0], :3]
-        right_hip_rots = self.robot.data.body_state_w[:, self.right_hip_idx[0], 3:7]
-        leg_offset = torch.zeros_like(right_hip_loc, device=right_hip_loc.device) + torch.tensor([0.0, self.cfg.thigh_length, 0.0], device=right_hip_loc.device)
-        right_knee_loc = right_hip_loc - math_utils.quat_apply(right_hip_rots, leg_offset)
+        right_knee_loc = self.robot.data.body_link_state_w[:, self.right_knee_idx[0], :3]
         return right_knee_loc
 
     def _get_top_torso_location(self) -> torch.Tensor:
         torso_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
         torso_rots = self.robot.data.body_state_w[:, self.body_idx[0], 3:7]
-        offset = torch.tensor([self.cfg.torso_length, 0.0, 0.0], device=torso_loc.device).expand_as(torso_loc)
+        offset = torch.tensor(self.cfg.head_offset_from_torso_loc, device=self.device).expand_as(torso_loc)
         top_torso_loc = torso_loc + math_utils.quat_apply(torso_rots, offset)
-        return top_torso_loc
+        return top_torso_loc, torso_rots
+    
+    def _get_left_foot_location(self) -> torch.Tensor:
+        foot_loc = self.robot.data.body_state_w[:, self.left_knee_idx[0], :3]
+        foot_rots = self.robot.data.body_state_w[:, self.left_knee_idx[0], 3:7]
+        offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
+        foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
+        return foot_offset_loc, foot_rots
+    
+    def _get_right_foot_location(self) -> torch.Tensor:
+        foot_loc = self.robot.data.body_state_w[:, self.right_knee_idx[0], :3]
+        foot_rots = self.robot.data.body_state_w[:, self.right_knee_idx[0], 3:7]
+        offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
+        foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
+        return foot_offset_loc, foot_rots
 
     def _visualize_markers(self):
         # Arrow locations for command and speed visualization (not true torso top/bottom)
         torso_base_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
-        arrow_loc = torch.vstack((torso_base_loc + self.marker_offset*1.1, torso_base_loc + self.marker_offset))
+        arrow_loc = torch.vstack((torso_base_loc + self.marker_offset * 1.1, torso_base_loc + self.marker_offset))
+        head_loc, head_rots = self._get_top_torso_location()
 
-        # Rotation for arrows (using the new base rotor index)
+        # Rotation for arrows
         ang_speed = self.joint_vel[:, self.base_rotor_dof_name_idx[0]]
-        base_angle = self.joint_pos[:, self.base_rotor_dof_name_idx[0]]
-        up_vec = torch.tensor([0.0, 0.0, 1.0], device=arrow_loc.device)
-        rots_actual = math_utils.quat_from_angle_axis(base_angle + torch.sign(ang_speed)*torch.pi/2, up_vec)
-        rots_command = math_utils.quat_from_angle_axis(base_angle + torch.sign(self.command)*torch.pi/2, up_vec)
+        base_angle = -self.joint_pos[:, self.base_rotor_dof_name_idx[0]]
+        up_vec = torch.tensor([0.0, 0.0, 1.0], device=self.device)
+        rots_actual = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(ang_speed)*torch.pi/2, up_vec)
+        rots_command = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(self.command[:, 4])*torch.pi/2, up_vec)
         arrow_rots = torch.vstack((rots_actual, rots_command))
 
         # Scaling for arrows
-        base_scale = torch.tensor([0.25, 0.25, 0.5], device=arrow_loc.device)
-        command_scale = (1+torch.abs(self.command)).unsqueeze(1) * base_scale
-        actual_scale = (1+torch.abs(ang_speed)).unsqueeze(1) * base_scale
+        base_scale = torch.tensor([0.25, 0.25, 0.5], device=self.device)
+        command_scale = (1 + torch.abs(self.command[:, 4])).unsqueeze(1) * base_scale
+        actual_scale = (1 + torch.abs(ang_speed)).unsqueeze(1) * base_scale
         arrow_scales = torch.vstack((actual_scale, command_scale))
 
         # Knees
         left_knee_loc = self._get_left_knee_location()
         right_knee_loc = self._get_right_knee_location()
-        scales_knee = torch.ones_like(arrow_scales, device=arrow_loc.device) * 0.5  # Smaller scale for knees
+        scales_knee = torch.ones_like(left_knee_loc, device=self.device) * 0.4
         left_hip_rots = self.robot.data.body_state_w[:, self.left_hip_idx[0], 3:7]
         right_hip_rots = self.robot.data.body_state_w[:, self.right_hip_idx[0], 3:7]
+        
+        # Marker indices for knees
+        num_envs = self.cfg.scene.num_envs
+        left_knee_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
+        right_knee_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
 
-        # Top torso marker (same marker as knees)
-        top_torso_loc = self._get_top_torso_location()
-        top_torso_rots = self.robot.data.body_state_w[:, self.body_idx[0], 3:7]
-        top_torso_scales = torch.ones_like(arrow_scales, device=arrow_loc.device) * 0.5
+        # Check for low knee condition when not sitting
+        is_walking_command = self.command[:, 0] == 0
+        
+        # Left knee
+        left_knee_low = (left_knee_loc[:, 2] < 0.1) & is_walking_command
+        left_knee_indices[left_knee_low] = 3 # index for low_knee marker
+
+        # Right knee
+        right_knee_low = (right_knee_loc[:, 2] < 0.1) & is_walking_command
+        right_knee_indices[right_knee_low] = 3 # index for low_knee marker
+
+        # Feet
+        left_foot_loc, left_foot_rots = self._get_left_foot_location()
+        right_foot_loc, right_foot_rots = self._get_right_foot_location()
+        scales_foot = torch.ones_like(left_foot_loc, device=self.device) * 0.4
+
+        # Marker indices for feet
+        left_foot_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
+        right_foot_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
+
+        # Check for low foot condition when not sitting
+        left_foot_low = (left_foot_loc[:, 2] < 0.05) & is_walking_command
+        left_foot_indices[left_foot_low] = 3 # index for low_knee marker (re-using for low foot)
+
+        right_foot_low = (right_foot_loc[:, 2] < 0.05) & is_walking_command
+        right_foot_indices[right_foot_low] = 3 # index for low_knee marker (re-using for low foot)
 
         # Stack all marker locations, rotations, and scales
-        loc = torch.vstack((arrow_loc, left_knee_loc, right_knee_loc, top_torso_loc))
-        scales = torch.vstack((arrow_scales, scales_knee, scales_knee, top_torso_scales))
-        rots = torch.vstack((arrow_rots, left_hip_rots, right_hip_rots, top_torso_rots))
+        loc = torch.vstack((arrow_loc, left_knee_loc, right_knee_loc, head_loc, left_foot_loc, right_foot_loc))
+        rots = torch.vstack((arrow_rots, left_hip_rots, right_hip_rots, head_rots, left_foot_rots, right_foot_rots))
+        scales = torch.vstack((arrow_scales, scales_knee, scales_knee, scales_knee, scales_foot, scales_foot))
 
-        # Marker indices: 0=speed, 1=command, 2=knee, 2=knee, 2=top torso (same as knee)
-        num_envs = self.cfg.scene.num_envs
+        # Marker indices: 0=speed, 1=command, 2=knee, 3=low_knee
         marker_indices = torch.hstack((
-            torch.zeros(num_envs),                # speed arrow
-            torch.ones(num_envs),                 # command arrow
-            2*torch.ones(num_envs),               # left knee
-            2*torch.ones(num_envs),               # right knee
-            2*torch.ones(num_envs),               # top torso
+            torch.zeros(num_envs, device=self.device),  # speed arrow
+            torch.ones(num_envs, device=self.device),  # command arrow
+            left_knee_indices,  # left knee
+            right_knee_indices,  # right knee
+            2*torch.ones(num_envs, device=self.device), # head
+            left_foot_indices, # left foot
+            right_foot_indices, # right foot
         ))
         self.visualization_markers.visualize(loc, rots, marker_indices=marker_indices, scales=scales)
 
@@ -193,8 +231,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         # The base rotor is not part of the observation space for the policy
         return {
             "policy": torch.cat([
-                self.joint_pos[:, :self.base_rotor_dof_name_idx[0]],
-                self.joint_pos[:, self.base_rotor_dof_name_idx[0]+1:],
+                self.joint_pos[:, self.obs_joint_pos_indices],
                 self.joint_vel,
                 self.command[:,[0,4]],
                 self.actions,
@@ -210,6 +247,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             left_hip_angle=self.joint_pos[:, self.body_left_hip_dof_name_idx],
             right_knee_angle=self.joint_pos[:, self.right_hip_shin_dof_name_idx],
             left_knee_angle=self.joint_pos[:, self.left_hip_shin_dof_name_idx],
+            left_knee_location=self._get_left_knee_location(),
+            right_knee_location=self._get_right_knee_location(),
+            left_foot_location=self._get_left_foot_location()[0],
+            right_foot_location=self._get_right_foot_location()[0],
             reset_terminated=self.reset_terminated,
             command=self.command[:,[0,4]],
         )
@@ -217,6 +258,8 @@ class CbriisaaclabEnv(DirectRLEnv):
     def _get_dones(self):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         died = self.joint_pos[:, self.rotor_rod_dof_name_idx[0]] > self.cfg.termination_rod_angle
+        head_loc, head_rots = self._get_top_torso_location()
+        died |= head_loc[:, 2] < self.cfg.termination_head_height
         return died, time_out
 
     def _reset_idx(self, env_ids=None):
@@ -235,13 +278,13 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         # -- Standing initial state for 70% of environments
         # Determine which envs will be standing
-        stand_mask = torch.rand(num_resets, device=self.device) < 0.9
+        stand_mask = torch.rand(num_resets, device=self.device) < 0.7
         stand_indices = env_ids[stand_mask]
         num_standing = len(stand_indices)
 
         if num_standing > 0:
             # Set standing command
-            self.command[stand_indices, :] = get_command(sit=0, walk_time=self.cfg.command_info_cfg['walk_min'] // 3, speed_time=self.cfg.command_info_cfg['walk_min'] // 3,device=self.device)
+            self.command[stand_indices, :] = get_command(sit=0,device=self.device)
             
             standing_joint_pos = joint_pos[stand_mask]
 
@@ -297,14 +340,6 @@ class CbriisaaclabEnv(DirectRLEnv):
         actions[:,3] *= self.cfg.action_knee_scale
         return actions
     
-    def _get_left_hip_location(self) -> torch.Tensor:
-        """Returns left hip location for all envs."""
-        return self.robot.data.body_state_w[:, self.left_hip_idx[0], :3]
-
-    def _get_right_hip_location(self) -> torch.Tensor:
-        """Returns right hip location for all envs."""
-        return self.robot.data.body_state_w[:, self.right_hip_idx[0], :3]
-    
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
@@ -314,6 +349,10 @@ def compute_rewards(
     left_hip_angle: torch.Tensor,
     right_knee_angle: torch.Tensor,
     left_knee_angle: torch.Tensor,
+    left_knee_location: torch.Tensor,
+    right_knee_location: torch.Tensor,
+    left_foot_location: torch.Tensor,
+    right_foot_location: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
 ):
@@ -327,19 +366,28 @@ def compute_rewards(
 
     # --- Rewards for walking ---
     # Penalize deviation from target speed and encourage standing height
-    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -1.0
-    walk_reward += body_height.sum(dim=-1) * -2.5
-    walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.5
+    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.1
+    walk_reward += body_height.sum(dim=-1) * -0.25
+    walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
+    walk_reward += (left_knee_location[:, [2]] < 0.1).sum(dim=-1) * -0.04
+    walk_reward += (right_knee_location[:, [2]] < 0.1).sum(dim=-1) * -0.04
+
+    # Penalty for both feet on the ground when commanded to move
+    moving_command = command[:, 1].abs() > 0.15
+    left_foot_low = left_foot_location[:, 2] < 0.07
+    right_foot_low = right_foot_location[:, 2] < 0.07
+    walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
+
 
     # --- Rewards for sitting ---
     # Penalize any velocity to encourage being still.
     # You could also add a reward for being at a low height.
-    sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -1.0
-    sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.5
-    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.5
-    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.5
-    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.5
-    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.5
+    sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
 
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
@@ -368,9 +416,15 @@ def define_markers() -> VisualizationMarkers:
                 scale=(0.1, 0.1, 0.1),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
             ),
+            "low_knee": sim_utils.UsdFileCfg(
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
+                scale=(0.1, 0.1, 0.1),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            ),
         },
     )
     return VisualizationMarkers(cfg=marker_cfg)
 
-def get_command(sit: float = 1, sit_time: float = 0, walk_time: float = 0, speed_time: float = 0,speed:float = 1.0,device = "cpu"):
-    return torch.tensor([sit,sit_time,walk_time,speed_time,speed],device=device)
+
+def get_command(sit: float = 1, sit_time: float = 0, walk_time: float = 0, speed_time: float = 0,speed:float = 0,device = "cpu"):
+    return torch.tensor([sit, sit_time, walk_time, speed_time, speed], dtype=torch.float32, device=device)
