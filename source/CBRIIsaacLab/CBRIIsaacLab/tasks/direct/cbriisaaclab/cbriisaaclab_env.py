@@ -247,6 +247,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             left_hip_angle=self.joint_pos[:, self.body_left_hip_dof_name_idx],
             right_knee_angle=self.joint_pos[:, self.right_hip_shin_dof_name_idx],
             left_knee_angle=self.joint_pos[:, self.left_hip_shin_dof_name_idx],
+            right_hip_vel=self.joint_vel[:, self.body_right_hip_dof_name_idx],
+            left_hip_vel=self.joint_vel[:, self.body_left_hip_dof_name_idx],
+            right_knee_vel=self.joint_vel[:, self.right_hip_shin_dof_name_idx],
+            left_knee_vel=self.joint_vel[:, self.left_hip_shin_dof_name_idx],
             left_knee_location=self._get_left_knee_location(),
             right_knee_location=self._get_right_knee_location(),
             left_foot_location=self._get_left_foot_location()[0],
@@ -349,6 +353,10 @@ def compute_rewards(
     left_hip_angle: torch.Tensor,
     right_knee_angle: torch.Tensor,
     left_knee_angle: torch.Tensor,
+    right_hip_vel: torch.Tensor,
+    left_hip_vel: torch.Tensor,
+    right_knee_vel: torch.Tensor,
+    left_knee_vel: torch.Tensor,
     left_knee_location: torch.Tensor,
     right_knee_location: torch.Tensor,
     left_foot_location: torch.Tensor,
@@ -361,33 +369,39 @@ def compute_rewards(
     is_sitting_command = command[:, 0] == 1
 
     # Common rewards/penalties for all envs
-    termination_penalty = reset_terminated.float() * -35.0
-    alive_reward = (1.0 - reset_terminated.float()) * 0.1
+    termination_penalty = reset_terminated.float() * -10
+    alive_reward = (1.0 - reset_terminated.float()) * 0.05
 
     # --- Rewards for walking ---
     # Penalize deviation from target speed and encourage standing height
-    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.1
-    walk_reward += body_height.sum(dim=-1) * -0.25
+    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
+    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.01
+    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.01
+    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.01
+    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.01
+    walk_reward += body_height.sum(dim=-1) * -0.5
     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
-    walk_reward += (left_knee_location[:, [2]] < 0.1).sum(dim=-1) * -0.04
-    walk_reward += (right_knee_location[:, [2]] < 0.1).sum(dim=-1) * -0.04
+
+    # moving_command = command[:, 1].abs() > 0.15
+    walk_reward += (~is_sitting_command & (left_knee_location[:, 2] < 0.1)).float() * -0.05
+    walk_reward += (~is_sitting_command & (right_knee_location[:, 2] < 0.1)).float() * -0.05
 
     # Penalty for both feet on the ground when commanded to move
-    moving_command = command[:, 1].abs() > 0.15
-    left_foot_low = left_foot_location[:, 2] < 0.07
-    right_foot_low = right_foot_location[:, 2] < 0.07
-    walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
+    # left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
+    # right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
+    # walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
 
 
     # --- Rewards for sitting ---
     # Penalize any velocity to encourage being still.
     # You could also add a reward for being at a low height.
     sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
+    sit_reward += body_vel.abs().squeeze(-1) * -0.1
     sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
-    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.05
-    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.05
-    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
-    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
 
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
@@ -395,6 +409,63 @@ def compute_rewards(
     # Add common rewards
     total_reward += alive_reward + termination_penalty
     return total_reward
+
+# @torch.jit.script
+# def compute_rewards(
+#     body_vel: torch.Tensor,
+#     body_height: torch.Tensor,
+#     body_angle: torch.Tensor,
+#     right_hip_angle: torch.Tensor,
+#     left_hip_angle: torch.Tensor,
+#     right_knee_angle: torch.Tensor,
+#     left_knee_angle: torch.Tensor,
+#     left_knee_location: torch.Tensor,
+#     right_knee_location: torch.Tensor,
+#     left_foot_location: torch.Tensor,
+#     right_foot_location: torch.Tensor,
+#     reset_terminated: torch.Tensor,
+#     command: torch.Tensor,
+# ):
+#     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
+#     # command[:, 1] is the target speed
+#     is_sitting_command = command[:, 0] == 1
+
+#     # Common rewards/penalties for all envs
+#     termination_penalty = reset_terminated.float() * -25.0
+#     alive_reward = (1.0 - reset_terminated.float()) * 0.1
+
+#     # --- Rewards for walking ---
+#     # Penalize deviation from target speed and encourage standing height
+#     walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
+#     walk_reward += body_height.sum(dim=-1) * -0.35
+#     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
+
+#     moving_command = command[:, 1].abs() > 0.15
+#     walk_reward += (moving_command & (left_knee_location[:, 2] < 0.1)).float() * -0.1
+#     walk_reward += (moving_command & (right_knee_location[:, 2] < 0.1)).float() * -0.1
+
+#     # Penalty for both feet on the ground when commanded to move
+#     left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
+#     right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
+#     walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
+
+
+#     # --- Rewards for sitting ---
+#     # Penalize any velocity to encourage being still.
+#     # You could also add a reward for being at a low height.
+#     sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
+#     sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+
+#     # Select the appropriate reward based on the command
+#     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
+
+#     # Add common rewards
+#     total_reward += alive_reward + termination_penalty
+#     return total_reward
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

@@ -32,8 +32,8 @@ class EventCfg:
         min_step_count_between_reset=720,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "static_friction_range": (0.7, 1.3),
-            "dynamic_friction_range": (0.7, 1.0),
+            "static_friction_range": (0.8, 1.0),
+            "dynamic_friction_range": (0.8, 1.0),
             "restitution_range": (1.0, 1.0),
             "num_buckets": 250,
         },
@@ -44,8 +44,8 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=joint_names),
-            "stiffness_distribution_params": (0.75, 1.25),
-            "damping_distribution_params": (0.75, 1.25),
+            "stiffness_distribution_params": (0.9, 1.1),
+            "damping_distribution_params": (0.9, 1.1),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -58,7 +58,7 @@ class EventCfg:
         is_global_time=True,
         interval_range_s=(36.0, 36.0),  # time_s = num_steps * (decimation * dt)
         params={
-            "gravity_distribution_params": ([0.0, 0.0, 0.-2], [0.0, 0.0, 0.2]),
+            "gravity_distribution_params": ([0.0, 0.0, -0.1], [0.0, 0.0, 0.1]),
             "operation": "add",
             "distribution": "gaussian",
         },
@@ -87,7 +87,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=4.0, replicate_physics=True)
 
     # custom parameters/scales
     # - controllable joint
@@ -125,7 +125,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     }
 
     default_standing_state_a = {
-        'rotor_rod': 1.5 * math.pi / 180.0,
+        'rotor_rod': 1.0 * math.pi / 180.0,
         'rod_body': -17.0 * math.pi / 180,
         'body_right_hip': 22.0 * math.pi / 180,
         'body_left_hip': -138.0 * math.pi / 180,
@@ -134,7 +134,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     }
 
     default_standing_state_b = {
-        'rotor_rod': 1.5 * math.pi / 180.0,
+        'rotor_rod': 1.0 * math.pi / 180.0,
         'rod_body': -17.0 * math.pi / 180,
         'body_right_hip': 138.0 * math.pi / 180,
         'body_left_hip': -22.0 * math.pi / 180,
