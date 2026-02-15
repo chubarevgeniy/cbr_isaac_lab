@@ -114,10 +114,20 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     termination_rod_angle = 8.9 * math.pi / 180.0
     termination_head_height = 0.1
 
+    # observation noise
+    add_noise = True
+    noise_pos_hip_knee = 0.05
+    noise_vel_hip_knee = 0.05
+    noise_height_pos = 0.01
+    noise_height_vel = 0.05
+    noise_angle_pos = 0.05
+    noise_angle_vel = 0.05
+    noise_vel = 0.1
+
     #commands settings
     command_info_cfg = {
         'sit_min':phys_sps/decimation * 1,
-        'sit_max':phys_sps/decimation * 3,
+        'sit_max':phys_sps/decimation * 2,
         'walk_min':phys_sps/decimation * 7,
         'walk_max':phys_sps/decimation * 13,
         'speed_min':phys_sps/decimation * 2,

@@ -39,6 +39,13 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
         self.right_knee_idx,_ = self.robot.find_bodies('right_shin')
 
+        self.noise_hip_knee_indices = [
+            self.body_right_hip_dof_name_idx[0],
+            self.body_left_hip_dof_name_idx[0],
+            self.right_hip_shin_dof_name_idx[0],
+            self.left_hip_shin_dof_name_idx[0]
+        ]
+
         # Pre-compute indices for observations to avoid fragile slicing
         self.obs_joint_pos_indices = torch.tensor(
             [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
@@ -107,7 +114,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         commands_to_change_number = int(commands_to_change.sum().item())
         if(commands_to_change_number>0):
             self.command[commands_to_change,3] = 0
-            self.command[commands_to_change,4] = sample_uniform(-1,1,(commands_to_change_number,),self.device)
+            self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
         self.actions = self._clip_and_scale_actions(actions.clone())
@@ -228,11 +235,52 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _get_observations(self):
         self.update_and_sample_commands()
+
+        joint_pos = self.joint_pos.clone()
+        joint_vel = self.joint_vel.clone()
+
+        if self.cfg.add_noise:
+            # Apply noise to hip and knee positions
+            joint_pos[:, self.noise_hip_knee_indices] += sample_uniform(
+                -self.cfg.noise_pos_hip_knee, self.cfg.noise_pos_hip_knee,
+                joint_pos[:, self.noise_hip_knee_indices].shape, self.device
+            )
+            # tilt
+            joint_pos[:, [self.rod_body_dof_name_idx[0]]] += sample_uniform(
+                -self.cfg.noise_angle_pos, self.cfg.noise_angle_pos,
+                joint_pos[:, [self.rod_body_dof_name_idx[0]]].shape, self.device
+            )
+            # height
+            joint_pos[:, [self.rotor_rod_dof_name_idx[0]]] += sample_uniform(
+                -self.cfg.noise_height_pos, self.cfg.noise_height_pos,
+                joint_pos[:, [self.rotor_rod_dof_name_idx[0]]].shape, self.device
+            )
+            # Apply noise to velocities
+            joint_vel[:, self.noise_hip_knee_indices] += sample_uniform(
+                -self.cfg.noise_vel_hip_knee, self.cfg.noise_vel_hip_knee,
+                joint_pos[:, self.noise_hip_knee_indices].shape, self.device
+            )
+            # tilt
+            joint_vel[:, [self.rod_body_dof_name_idx[0]]] += sample_uniform(
+                -self.cfg.noise_angle_vel, self.cfg.noise_angle_vel,
+                joint_vel[:, [self.rod_body_dof_name_idx[0]]].shape, self.device
+            )
+            # height
+            joint_vel[:, [self.rotor_rod_dof_name_idx[0]]] += sample_uniform(
+                -self.cfg.noise_height_vel, self.cfg.noise_height_vel,
+                joint_vel[:, [self.rotor_rod_dof_name_idx[0]]].shape, self.device
+            )
+            # speed
+            joint_vel[:, [self.base_rotor_dof_name_idx[0]]] += sample_uniform(
+                -self.cfg.noise_vel, self.cfg.noise_vel,
+                joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
+            )
+        
         # The base rotor is not part of the observation space for the policy
         return {
             "policy": torch.cat([
-                self.joint_pos[:, self.obs_joint_pos_indices],
-                self.joint_vel,
+                joint_pos[:, self.obs_joint_pos_indices],
+                joint_vel,
                 self.command[:,[0,4]],
                 self.actions,
             ], dim=-1)
@@ -375,10 +423,10 @@ def compute_rewards(
     # --- Rewards for walking ---
     # Penalize deviation from target speed and encourage standing height
     walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
-    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.01
-    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.01
-    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.01
-    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.01
+    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.0001
+    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.0001
+    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.0005
+    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.0005
     walk_reward += body_height.sum(dim=-1) * -0.5
     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
 
