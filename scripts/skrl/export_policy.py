@@ -13,8 +13,6 @@ Script to export an RL agent to TorchScript.
 import argparse
 import sys
 import os
-import torch
-import torch.nn as nn
 
 from isaaclab.app import AppLauncher
 
@@ -54,6 +52,8 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import torch
+import torch.nn as nn
 import skrl
 from packaging import version
 
@@ -175,7 +175,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Create export wrapper
     print("Creating ExportPolicy wrapper...")
-    export_model = ExportPolicy(policy, scaler).to(device)
+    export_model = ExportPolicy(policy, scaler).to(device).to(torch.float32)
     export_model.eval()
 
     # Dummy input for tracing
