@@ -116,7 +116,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         commands_to_change_number = int(commands_to_change.sum().item())
         if(commands_to_change_number>0):
             self.command[commands_to_change,3] = 0
-            self.command[commands_to_change,4] = sample_uniform(-2.5,2.5,(commands_to_change_number,),self.device)
+            self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
         self.actions = self._clip_and_scale_actions(actions.clone())
@@ -361,6 +361,13 @@ class CbriisaaclabEnv(DirectRLEnv):
             right_foot_vel=self._get_right_foot_velocity(),
             reset_terminated=self.reset_terminated,
             command=self.command[:,[0,4]],
+            actions=self.actions,
+            current_actuated_pos=self.joint_pos[:, [
+                self.body_right_hip_dof_name_idx[0],
+                self.body_left_hip_dof_name_idx[0],
+                self.right_hip_shin_dof_name_idx[0],
+                self.left_hip_shin_dof_name_idx[0]
+            ]],
         )
 
     def _get_dones(self):
@@ -476,6 +483,8 @@ def compute_rewards(
     right_foot_vel: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
+    actions: torch.Tensor,
+    current_actuated_pos: torch.Tensor,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
@@ -492,7 +501,7 @@ def compute_rewards(
     walk_reward += left_hip_vel.abs().squeeze(-1) * -0.0001
     walk_reward += right_knee_vel.abs().squeeze(-1) * -0.0001
     walk_reward += left_knee_vel.abs().squeeze(-1) * -0.0001
-    walk_reward += body_height.sum(dim=-1) * -0.5
+    walk_reward += body_height.squeeze(-1) * -0.5
     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
 
     # moving_command = command[:, 1].abs() > 0.15
@@ -521,11 +530,14 @@ def compute_rewards(
     sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
 
+    # Penalty for actions far from current joint positions
+    action_diff_penalty = (actions - current_actuated_pos).square().sum(dim=-1) * -0.01
+
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
 
     # Add common rewards
-    total_reward += alive_reward + termination_penalty
+    total_reward += alive_reward + termination_penalty + action_diff_penalty
     return total_reward
 
 # @torch.jit.script
