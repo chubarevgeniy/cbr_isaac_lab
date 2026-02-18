@@ -46,6 +46,13 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.left_hip_shin_dof_name_idx[0]
         ]
 
+        self.actuated_dof_indices = [
+            self.body_right_hip_dof_name_idx[0],
+            self.body_left_hip_dof_name_idx[0],
+            self.right_hip_shin_dof_name_idx[0],
+            self.left_hip_shin_dof_name_idx[0]
+        ]
+
         # Pre-compute indices for observations to avoid fragile slicing
         self.obs_joint_pos_indices = torch.tensor(
             [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
@@ -63,6 +70,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
 
     def _setup_scene(self):
         # Initialize the robot
@@ -119,7 +127,11 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
-        self.actions = self._clip_and_scale_actions(actions.clone())
+        self.actions = actions.clone()
+        scaled_actions = self._scale_actions(actions)
+        self.targets += scaled_actions
+        limits = self.robot.data.soft_joint_pos_limits[:, self.actuated_dof_indices]
+        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -280,7 +292,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.visualization_markers.visualize(loc, rots, marker_indices=marker_indices, scales=scales)
 
     def _apply_action(self):
-        self.robot.set_joint_position_target(self.actions, joint_ids=[
+        self.robot.set_joint_position_target(self.targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],
@@ -336,7 +348,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_pos[:, self.obs_joint_pos_indices],
                 joint_vel,
                 self.command[:,[0,4]],
-                self.actions,
+                self.targets,
             ], dim=-1)
         }
     
@@ -362,12 +374,6 @@ class CbriisaaclabEnv(DirectRLEnv):
             reset_terminated=self.reset_terminated,
             command=self.command[:,[0,4]],
             actions=self.actions,
-            current_actuated_pos=self.joint_pos[:, [
-                self.body_right_hip_dof_name_idx[0],
-                self.body_left_hip_dof_name_idx[0],
-                self.right_hip_shin_dof_name_idx[0],
-                self.left_hip_shin_dof_name_idx[0]
-            ]],
         )
 
     def _get_dones(self):
@@ -446,19 +452,15 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        self.actions[env_ids] = joint_pos[:, [
-            self.body_right_hip_dof_name_idx[0],
-            self.body_left_hip_dof_name_idx[0],
-            self.right_hip_shin_dof_name_idx[0],
-            self.left_hip_shin_dof_name_idx[0]
-        ]]
+        self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
+        self.actions[env_ids] = 0.0
 
-    def _clip_and_scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # Clip and scale actions if necessary
-        actions =  (actions.clamp(-1, 1) + 1)
+    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        # Scale actions (deltas)
+        actions = actions.clamp(-1, 1)
         actions[:,0] *= self.cfg.action_hip_scale
-        actions[:,1] *= -self.cfg.action_hip_scale
-        actions[:,2] *= -self.cfg.action_knee_scale
+        actions[:,1] *= self.cfg.action_hip_scale
+        actions[:,2] *= self.cfg.action_knee_scale
         actions[:,3] *= self.cfg.action_knee_scale
         return actions
     
@@ -484,7 +486,6 @@ def compute_rewards(
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
-    current_actuated_pos: torch.Tensor,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
@@ -497,10 +498,10 @@ def compute_rewards(
     # --- Rewards for walking ---
     # Penalize deviation from target speed and encourage standing height
     walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
-    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.0001
-    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.0001
-    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.0001
-    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.0001
+    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.00001
     walk_reward += body_height.squeeze(-1) * -0.5
     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
 
@@ -511,7 +512,7 @@ def compute_rewards(
     # Penalty for feet dragging
     feet_drag_penalty = torch.exp(-left_foot_location[:, 2] * 15.0) * torch.norm(left_foot_vel[:, :2], dim=-1)
     feet_drag_penalty += torch.exp(-right_foot_location[:, 2] * 15.0) * torch.norm(right_foot_vel[:, :2], dim=-1)
-    walk_reward += feet_drag_penalty * -0.01
+    walk_reward += feet_drag_penalty * -0.03
 
     # Penalty for both feet on the ground when commanded to move
     # left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
@@ -530,14 +531,14 @@ def compute_rewards(
     sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
 
-    # Penalty for actions far from current joint positions
-    action_diff_penalty = (actions - current_actuated_pos).square().sum(dim=-1) * -0.01
+    # Penalty for action magnitude (energy/effort)
+    action_penalty = torch.sum(actions ** 2, dim=-1) * -0.00001
 
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
 
     # Add common rewards
-    total_reward += alive_reward + termination_penalty + action_diff_penalty
+    total_reward += alive_reward + termination_penalty + action_penalty
     return total_reward
 
 # @torch.jit.script

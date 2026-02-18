@@ -73,12 +73,12 @@ agent:
     experiment_name: ""
     write_interval: auto
     store_separately: False
-    checkpoint_interval: 6000
+    checkpoint_interval: 8000
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 720000
+  timesteps: 800000
   environment_info: log

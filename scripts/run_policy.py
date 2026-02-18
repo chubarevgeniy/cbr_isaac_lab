@@ -153,9 +153,17 @@ class CBRIPolicyRunner:
             self.left_hip_shin_dof_name_idx[0]
         ]
 
+        self.actuated_dof_indices = [
+            self.body_right_hip_dof_name_idx[0],
+            self.body_left_hip_dof_name_idx[0],
+            self.right_hip_shin_dof_name_idx[0],
+            self.left_hip_shin_dof_name_idx[0]
+        ]
+
         # Buffers
         self.command = torch.zeros((self.num_envs, 5), device=self.device)
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
+        self.targets = torch.zeros((self.num_envs, 4), device=self.device)
 
         # Markers
         self.visualization_markers = define_markers()
@@ -232,12 +240,7 @@ class CBRIPolicyRunner:
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:])
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel)
 
-        self.actions = joint_pos[:, [
-            self.body_right_hip_dof_name_idx[0],
-            self.body_left_hip_dof_name_idx[0],
-            self.right_hip_shin_dof_name_idx[0],
-            self.left_hip_shin_dof_name_idx[0]
-        ]].clone()
+        self.targets = joint_pos[:, self.actuated_dof_indices].clone()
 
     def update_and_sample_commands(self):
         # update timers
@@ -320,22 +323,25 @@ class CBRIPolicyRunner:
             joint_pos[:, self.obs_joint_pos_indices],
             joint_vel,
             self.command[:, [0, 4]],
-            self.actions,
+            self.targets,
         ], dim=-1).float()
 
-    def _clip_and_scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # Clip and scale actions if necessary
-        actions = (actions.clamp(-1, 1) + 1)
+    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        # Scale actions (deltas)
+        actions = actions.clamp(-1, 1)
         actions[:, 0] *= self.cfg.action_hip_scale
-        actions[:, 1] *= -self.cfg.action_hip_scale
-        actions[:, 2] *= -self.cfg.action_knee_scale
+        actions[:, 1] *= self.cfg.action_hip_scale
+        actions[:, 2] *= self.cfg.action_knee_scale
         actions[:, 3] *= self.cfg.action_knee_scale
         return actions
 
     def apply_actions(self, actions):
-        scaled_actions = self._clip_and_scale_actions(actions.clone())
-        self.actions = scaled_actions
-        self.robot.set_joint_position_target(scaled_actions, joint_ids=[
+        self.actions = actions.clone()
+        scaled_actions = self._scale_actions(actions)
+        self.targets += scaled_actions
+        limits = self.robot.data.soft_joint_pos_limits[:, self.actuated_dof_indices]
+        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
+        self.robot.set_joint_position_target(self.targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],
@@ -584,11 +590,11 @@ def main():
             runner.right_hip_shin_dof_name_idx[0],
             runner.left_hip_shin_dof_name_idx[0]
         ]
-        act_deg = np.degrees(runner.actions[0].cpu().numpy())
+        tar_deg = np.degrees(runner.targets[0].cpu().numpy())
         pos_deg = np.degrees(runner.joint_pos[0, actuated_ids].cpu().numpy())
-        act_str = np.array2string(act_deg, precision=4, separator=', ', suppress_small=True)
+        tar_str = np.array2string(tar_deg, precision=4, separator=', ', suppress_small=True)
         pos_str = np.array2string(pos_deg, precision=4, separator=', ', suppress_small=True)
-        print(f"Actions (deg): {act_str} | Joint Pos (deg): {pos_str}")
+        print(f"Targets (deg): {tar_str} | Joint Pos (deg): {pos_str}")
 
         # Step physics
         for _ in range(args_cli.decimation):

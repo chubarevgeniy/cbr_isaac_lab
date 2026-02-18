@@ -106,8 +106,8 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     right_foot_offset_from_shin_loc = [0.14,0,-0.08]
 
     # - action scale
-    action_hip_scale = 196.0 / 2 /180 * math.pi  #
-    action_knee_scale = 124.0 / 2 / 180 * math.pi  #
+    action_hip_scale = 0.1  # rad per step
+    action_knee_scale = 0.1  # rad per step
     # - reward scales
     rew_scale_alive = 1.0
     # - reset states/conditions
