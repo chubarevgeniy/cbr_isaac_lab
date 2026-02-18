@@ -160,6 +160,15 @@ class CBRIPolicyRunner:
             self.left_hip_shin_dof_name_idx[0]
         ]
 
+        print(f"Indecies:\n\
+            base_rotor_dof_name_idx: {self.base_rotor_dof_name_idx}\n\
+            rotor_rod_dof_name_idx: {self.rotor_rod_dof_name_idx}\n\
+            rod_body_dof_name_idx: {self.rod_body_dof_name_idx}\n\
+            body_right_hip_dof_name_idx: {self.body_right_hip_dof_name_idx}\n\
+            body_left_hip_dof_name_idx: {self.body_left_hip_dof_name_idx}\n\
+            right_hip_shin_dof_name_idx: {self.right_hip_shin_dof_name_idx}\n\
+            left_hip_shin_dof_name_idx: {self.left_hip_shin_dof_name_idx}\n")
+
         # Buffers
         self.command = torch.zeros((self.num_envs, 5), device=self.device)
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
@@ -519,12 +528,14 @@ def main():
     # Load policy or agent
     policy = None
     runner_skrl = None
+    experiment_cfg = None
     
     if args_cli.policy:
         print(f"[INFO] Loading TorchScript policy from: {args_cli.policy}")
         policy = torch.jit.load(args_cli.policy).to(sim.device)
         policy.eval()
-    elif args_cli.checkpoint and args_cli.task:
+
+    if args_cli.checkpoint and args_cli.task:
         print(f"[INFO] Loading SKRL agent from: {args_cli.checkpoint}")
         # Load config
         task_name = args_cli.task.split(":")[-1]
@@ -533,8 +544,7 @@ def main():
         except ValueError:
             experiment_cfg = load_cfg_from_registry(task_name, "skrl_cfg_entry_point")
         
-        # We need to initialize the runner later after we know the env config (spaces)
-    else:
+    if policy is None and experiment_cfg is None:
         raise ValueError("Either --policy or --checkpoint and --task must be provided.")
 
     # Update config based on args
@@ -557,7 +567,7 @@ def main():
     runner = CBRIPolicyRunner(scene, env_cfg)
 
     # Initialize SKRL agent if needed
-    if runner_skrl is None and args_cli.checkpoint:
+    if runner_skrl is None and experiment_cfg is not None:
         dummy_env = SkrlDummyEnv(runner.num_envs, env_cfg.observation_space, env_cfg.action_space, runner.device)
         experiment_cfg["trainer"]["close_environment_at_exit"] = False
         runner_skrl = Runner(dummy_env, experiment_cfg)
@@ -571,14 +581,24 @@ def main():
         # Get observations
         obs = runner.get_observations()
         
+        actions_policy = None
+        actions_skrl = None
+
         # Run policy
         with torch.no_grad():
             if policy is not None:
-                actions = policy(obs)
-            elif runner_skrl is not None:
+                actions_policy = policy(obs)
+            
+            if runner_skrl is not None:
                 # SKRL agent act returns (actions, log_prob, outputs)
                 outputs = runner_skrl.agent.act(obs, timestep=0, timesteps=0)
-                actions = outputs[-1].get("mean_actions", outputs[0])
+                actions_skrl = outputs[-1].get("mean_actions", outputs[0])
+        
+        # Select actions to apply (prefer policy if available)
+        if actions_policy is not None:
+            actions = actions_policy
+        elif actions_skrl is not None:
+            actions = actions_skrl
         
         # Apply actions
         runner.apply_actions(actions)
@@ -595,6 +615,12 @@ def main():
         tar_str = np.array2string(tar_deg, precision=4, separator=', ', suppress_small=True)
         pos_str = np.array2string(pos_deg, precision=4, separator=', ', suppress_small=True)
         print(f"Targets (deg): {tar_str} | Joint Pos (deg): {pos_str}")
+
+        if actions_policy is not None and actions_skrl is not None:
+            pol_str = np.array2string(actions_policy[0].cpu().numpy(), precision=4, separator=', ', suppress_small=True)
+            skrl_str = np.array2string(actions_skrl[0].cpu().numpy(), precision=4, separator=', ', suppress_small=True)
+            print(f"Policy Actions: {pol_str}")
+            print(f"SKRL Actions:   {skrl_str}")
 
         # Step physics
         for _ in range(args_cli.decimation):
