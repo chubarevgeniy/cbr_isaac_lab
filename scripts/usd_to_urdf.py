@@ -71,17 +71,42 @@ def strip_scale(world_mat) -> np.ndarray:
     return t
 
 
+def rpy_to_mat(r: float, p: float, y: float) -> np.ndarray:
+    cr, sr, cp, sp = math.cos(r), math.sin(r), math.cos(p), math.sin(p)
+    cy, sy = math.cos(y), math.sin(y)
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    return rz @ ry @ rx
+
+
 def rpy_from_mat(t: np.ndarray):
-    """URDF fixed-axis roll/pitch/yaw from a 4x4 (R = Rz(y) @ Ry(p) @ Rx(r))."""
+    """URDF fixed-axis roll/pitch/yaw from a 4x4 (R = Rz(y) @ Ry(p) @ Rx(r)).
+
+    Near pitch = +-90 deg the standard extraction is numerically unstable
+    (it silently loses the twist about the locked axis), so compute both the
+    standard and the gimbal-lock solution and return whichever actually
+    reconstructs the input rotation.
+    """
     r_mat = t[:3, :3]
-    pitch = math.asin(max(-1.0, min(1.0, -r_mat[2, 0])))
-    if abs(math.cos(pitch)) > 1e-9:
-        roll = math.atan2(r_mat[2, 1], r_mat[2, 2])
-        yaw = math.atan2(r_mat[1, 0], r_mat[0, 0])
-    else:  # gimbal lock
-        roll = math.atan2(-r_mat[1, 2], r_mat[1, 1])
-        yaw = 0.0
-    return roll, pitch, yaw
+    candidates = [(
+        math.atan2(r_mat[2, 1], r_mat[2, 2]),
+        math.atan2(-r_mat[2, 0], math.hypot(r_mat[0, 0], r_mat[1, 0])),
+        math.atan2(r_mat[1, 0], r_mat[0, 0]),
+    ), (
+        math.atan2(-r_mat[1, 2], r_mat[1, 1]),
+        math.copysign(math.pi / 2.0, -r_mat[2, 0]),
+        0.0,
+    )]
+    best, best_err = None, None
+    for rpy in candidates:
+        residual = rpy_to_mat(*rpy).T @ r_mat
+        err = abs(math.acos(max(-1.0, min(1.0, (np.trace(residual) - 1) / 2))))
+        if best is None or err < best_err:
+            best, best_err = rpy, err
+    if best_err > math.radians(0.5):
+        print(f"WARNING: rpy extraction residual {math.degrees(best_err):.3f} deg")
+    return best
 
 
 def origin_xml(t: np.ndarray, scale: float) -> str:
@@ -138,12 +163,19 @@ class JointInfo:
 
 
 def collect_meshes(body_prim, bodies_paths):
-    """All renderable UsdGeomMesh prims under a body, not crossing into other bodies."""
+    """All renderable UsdGeomMesh prims under a body, not crossing into other bodies.
+
+    Traverses instance proxies (Isaac assets usually instance the visual
+    meshes) and skips collision geometry.
+    """
     meshes = []
-    it = iter(Usd.PrimRange(body_prim))
+    it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
     for prim in it:
         path = str(prim.GetPath())
         if path != str(body_prim.GetPath()) and path in bodies_paths:
+            it.PruneChildren()
+            continue
+        if '/collisions' in path or '/collision' in path.lower():
             it.PruneChildren()
             continue
         if not prim.IsA(UsdGeom.Mesh):
@@ -157,8 +189,13 @@ def collect_meshes(body_prim, bodies_paths):
     return meshes
 
 
-def write_link_obj(path, mesh_prims, x_link_world_inv, xf_cache, scale):
-    """Merge all meshes of one link into a single OBJ, in the link frame."""
+def write_link_obj(path, mesh_prims, x_link_world_inv, xf_cache, scale, rgba=None):
+    """Merge all meshes of one link into a single OBJ, in the link frame.
+
+    If rgba is given, a .mtl file with that diffuse color is written next to
+    the OBJ (RViz ignores URDF material colors for mesh formats that carry
+    their own materials, so bake the color into the mesh).
+    """
     v_lines, f_lines = [], []
     offset = 0
     for prim in mesh_prims:
@@ -187,9 +224,33 @@ def write_link_obj(path, mesh_prims, x_link_world_inv, xf_cache, scale):
         offset += len(pts)
     if not v_lines:
         return False
+    header = ""
+    if rgba is not None:
+        base = os.path.splitext(os.path.basename(path))[0]
+        r, g, b, a = [float(v) for v in rgba.split()]
+        with open(os.path.splitext(path)[0] + ".mtl", "w") as m:
+            m.write(f"newmtl {base}_mat\n"
+                    f"Kd {r} {g} {b}\nKa {r * 0.3} {g * 0.3} {b * 0.3}\n"
+                    f"Ks 0.2 0.2 0.2\nNs 20\nd {a}\n")
+        header = f"mtllib {base}.mtl\nusemtl {base}_mat\n"
     with open(path, "w") as f:
-        f.write("\n".join(v_lines) + "\n" + "\n".join(f_lines) + "\n")
+        f.write(header + "\n".join(v_lines) + "\n" + "\n".join(f_lines) + "\n")
     return True
+
+
+# Distinct per-link colors so poses are easy to read in RViz screenshots
+PALETTE = [
+    ('gray', '0.5 0.5 0.5 1'),
+    ('olive', '0.55 0.55 0.1 1'),
+    ('dark', '0.15 0.15 0.15 1'),
+    ('orange', '0.95 0.55 0.1 1'),
+    ('blue', '0.15 0.3 0.9 1'),
+    ('cyan', '0.1 0.85 0.9 1'),
+    ('red', '0.9 0.1 0.1 1'),
+    ('magenta', '0.9 0.1 0.9 1'),
+    ('green', '0.1 0.8 0.2 1'),
+    ('yellow', '0.95 0.9 0.1 1'),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +313,9 @@ def convert(usd_path, out_dir, robot_name, mesh_uri_prefix, list_only=False):
     mesh_dir = os.path.join(out_dir, "meshes")
     os.makedirs(mesh_dir, exist_ok=True)
 
-    for p, prim in bodies.items():
+    for i, (p, prim) in enumerate(bodies.items()):
         name = link_name[p]
+        mat_name, mat_rgba = PALETTE[i % len(PALETTE)]
         chunks = [f'  <link name="{name}">',
                   "    <inertial>",
                   '      <mass value="0.1"/>',
@@ -262,12 +324,16 @@ def convert(usd_path, out_dir, robot_name, mesh_uri_prefix, list_only=False):
         mesh_prims = collect_meshes(prim, set(bodies))
         obj_name = f"{name}.obj"
         if mesh_prims and write_link_obj(os.path.join(mesh_dir, obj_name), mesh_prims,
-                                         np.linalg.inv(link_frame[p]), xf_cache, scale):
+                                         np.linalg.inv(link_frame[p]), xf_cache, scale,
+                                         rgba=mat_rgba):
             chunks += ["    <visual>",
                        '      <origin xyz="0 0 0" rpy="0 0 0"/>',
                        "      <geometry>",
                        f'        <mesh filename="{mesh_uri_prefix}/meshes/{obj_name}"/>',
                        "      </geometry>",
+                       f'      <material name="{mat_name}_{name}">',
+                       f'        <color rgba="{mat_rgba}"/>',
+                       "      </material>",
                        "    </visual>"]
         else:
             print(f"NOTE: no visual mesh found for link '{name}'")
