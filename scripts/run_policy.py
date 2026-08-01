@@ -186,16 +186,16 @@ class CBRIPolicyRunner:
         )
 
         # References
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        self.joint_pos = self.robot.data.joint_pos.torch
+        self.joint_vel = self.robot.data.joint_vel.torch
 
     def reset(self):
         # Initialize command
         self.command[:, [0, 1, 2, 3, 4]] = get_command(device=self.device, sit_time=self.cfg.command_info_cfg['sit_min'] // 2)
 
         # Reset robot to default state
-        joint_pos = self.robot.data.default_joint_pos.clone()
-        joint_vel = self.robot.data.default_joint_vel.clone()
+        joint_pos = self.robot.data.default_joint_pos.torch.clone()
+        joint_vel = self.robot.data.default_joint_vel.torch.clone()
 
         # -- Standing initial state for 70% of environments
         # Determine which envs will be standing
@@ -242,12 +242,14 @@ class CBRIPolicyRunner:
             joint_pos.device,
         )
 
-        default_root_state = self.robot.data.default_root_state.clone()
-        default_root_state[:, :3] += self.scene.env_origins
+        default_root_pose = self.robot.data.default_root_pose.torch.clone()
+        default_root_vel = self.robot.data.default_root_vel.torch.clone()
+        default_root_pose[:, :3] += self.scene.env_origins
 
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7])
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:])
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel)
+        self.robot.write_root_pose_to_sim_index(root_pose=default_root_pose)
+        self.robot.write_root_velocity_to_sim_index(root_velocity=default_root_vel)
+        self.robot.write_joint_position_to_sim_index(position=joint_pos)
+        self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel)
 
         self.targets = joint_pos[:, self.actuated_dof_indices].clone()
 
@@ -348,9 +350,9 @@ class CBRIPolicyRunner:
         self.actions = actions.clone()
         scaled_actions = self._scale_actions(actions)
         self.targets += scaled_actions
-        limits = self.robot.data.soft_joint_pos_limits[:, self.actuated_dof_indices]
+        limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
         self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
-        self.robot.set_joint_position_target(self.targets, joint_ids=[
+        self.robot.set_joint_position_target_index(target=self.targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],
@@ -358,38 +360,41 @@ class CBRIPolicyRunner:
         ])
 
     def _get_left_knee_location(self) -> torch.Tensor:
-        left_knee_loc = self.robot.data.body_link_state_w[:, self.left_knee_idx[0], :3]
+        left_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], :3]
         return left_knee_loc
 
     def _get_right_knee_location(self) -> torch.Tensor:
-        right_knee_loc = self.robot.data.body_link_state_w[:, self.right_knee_idx[0], :3]
+        right_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], :3]
         return right_knee_loc
 
     def _get_top_torso_location(self) -> torch.Tensor:
-        torso_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
-        torso_rots = self.robot.data.body_state_w[:, self.body_idx[0], 3:7]
+        torso_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
+        torso_loc = torso_pose[:, :3]
+        torso_rots = torso_pose[:, 3:7]
         offset = torch.tensor(self.cfg.head_offset_from_torso_loc, device=self.device).expand_as(torso_loc)
         top_torso_loc = torso_loc + math_utils.quat_apply(torso_rots, offset)
         return top_torso_loc, torso_rots
 
     def _get_left_foot_location(self) -> torch.Tensor:
-        foot_loc = self.robot.data.body_state_w[:, self.left_knee_idx[0], :3]
-        foot_rots = self.robot.data.body_state_w[:, self.left_knee_idx[0], 3:7]
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
+        foot_rots = foot_pose[:, 3:7]
         offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
         foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
         return foot_offset_loc, foot_rots
 
     def _get_right_foot_location(self) -> torch.Tensor:
-        foot_loc = self.robot.data.body_state_w[:, self.right_knee_idx[0], :3]
-        foot_rots = self.robot.data.body_state_w[:, self.right_knee_idx[0], 3:7]
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
+        foot_rots = foot_pose[:, 3:7]
         offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
         foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
         return foot_offset_loc, foot_rots
 
     def _get_left_foot_velocity(self) -> torch.Tensor:
-        shin_vel = self.robot.data.body_state_w[:, self.left_knee_idx[0], 7:10]
-        shin_ang_vel = self.robot.data.body_state_w[:, self.left_knee_idx[0], 10:13]
-        shin_rots = self.robot.data.body_state_w[:, self.left_knee_idx[0], 3:7]
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], 3:7]
 
         offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
         offset_world = math_utils.quat_apply(shin_rots, offset)
@@ -397,9 +402,9 @@ class CBRIPolicyRunner:
         return shin_vel + torch.cross(shin_ang_vel, offset_world, dim=-1)
 
     def _get_right_foot_velocity(self) -> torch.Tensor:
-        shin_vel = self.robot.data.body_state_w[:, self.right_knee_idx[0], 7:10]
-        shin_ang_vel = self.robot.data.body_state_w[:, self.right_knee_idx[0], 10:13]
-        shin_rots = self.robot.data.body_state_w[:, self.right_knee_idx[0], 3:7]
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], 3:7]
 
         offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
         offset_world = math_utils.quat_apply(shin_rots, offset)
@@ -408,7 +413,7 @@ class CBRIPolicyRunner:
 
     def visualize(self):
         # Arrow locations for command and speed visualization (not true torso top/bottom)
-        torso_base_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
+        torso_base_loc = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0], :3]
         arrow_loc = torch.vstack((torso_base_loc + self.marker_offset * 1.1, torso_base_loc + self.marker_offset))
         head_loc, head_rots = self._get_top_torso_location()
 
@@ -430,8 +435,8 @@ class CBRIPolicyRunner:
         left_knee_loc = self._get_left_knee_location()
         right_knee_loc = self._get_right_knee_location()
         scales_knee = torch.ones_like(left_knee_loc, device=self.device) * 0.4
-        left_hip_rots = self.robot.data.body_state_w[:, self.left_hip_idx[0], 3:7]
-        right_hip_rots = self.robot.data.body_state_w[:, self.right_hip_idx[0], 3:7]
+        left_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.left_hip_idx[0], 3:7]
+        right_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.right_hip_idx[0], 3:7]
 
         # Marker indices for knees
         num_envs = self.num_envs
@@ -572,7 +577,7 @@ def main():
         experiment_cfg["trainer"]["close_environment_at_exit"] = False
         runner_skrl = Runner(dummy_env, experiment_cfg)
         runner_skrl.agent.load(args_cli.checkpoint)
-        runner_skrl.agent.set_running_mode("eval")
+        runner_skrl.agent.enable_training_mode(False, apply_to_models=True)
 
     runner.reset()
 
@@ -591,7 +596,7 @@ def main():
             
             if runner_skrl is not None:
                 # SKRL agent act returns (actions, log_prob, outputs)
-                outputs = runner_skrl.agent.act(obs, timestep=0, timesteps=0)
+                outputs = runner_skrl.agent.act(obs, None, timestep=0, timesteps=0)
                 actions_skrl = outputs[-1].get("mean_actions", outputs[0])
         
         # Select actions to apply (prefer policy if available)

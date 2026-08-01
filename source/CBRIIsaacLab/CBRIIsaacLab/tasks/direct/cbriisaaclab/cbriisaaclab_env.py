@@ -6,17 +6,17 @@
 from __future__ import annotations
 
 import math
+
 import torch
 
-from isaaclab.markers.visualization_markers import VisualizationMarkers, VisualizationMarkersCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.math import sample_uniform, sample_gaussian
-import isaaclab.utils.math as math_utils  # <-- add import for math utils
-
+from isaaclab.utils import math as math_utils
+from isaaclab.utils.math import sample_gaussian, sample_uniform
 
 from .cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
 
@@ -58,8 +58,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
             device=self.device
         )
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        self.joint_pos = self.robot.data.joint_pos.torch
+        self.joint_vel = self.robot.data.joint_vel.torch
 
         # Initialize command handling
         self.command = torch.zeros((self.cfg.scene.num_envs,5), device=self.device)
@@ -79,12 +79,13 @@ class CbriisaaclabEnv(DirectRLEnv):
         # Add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
 
+        # Clone environments before registering assets, matching the Isaac Lab 3.0
+        # direct-workflow scene setup order.
+        self.scene.clone_environments(copy_from_source=False)
+
         # Add robot to the scene
         self.scene.articulations["robot"] = self.robot
 
-        # Clone environments
-        self.scene.clone_environments(copy_from_source=False)
-        
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -130,43 +131,46 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.actions = actions.clone()
         scaled_actions = self._scale_actions(actions)
         self.targets += scaled_actions
-        limits = self.robot.data.soft_joint_pos_limits[:, self.actuated_dof_indices]
+        limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
         self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
-        left_knee_loc = self.robot.data.body_link_state_w[:, self.left_knee_idx[0], :3]
+        left_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], :3]
         return left_knee_loc
 
     def _get_right_knee_location(self) -> torch.Tensor:
-        right_knee_loc = self.robot.data.body_link_state_w[:, self.right_knee_idx[0], :3]
+        right_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], :3]
         return right_knee_loc
 
     def _get_top_torso_location(self) -> torch.Tensor:
-        torso_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
-        torso_rots = self.robot.data.body_state_w[:, self.body_idx[0], 3:7]
+        torso_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
+        torso_loc = torso_pose[:, :3]
+        torso_rots = torso_pose[:, 3:7]
         offset = torch.tensor(self.cfg.head_offset_from_torso_loc, device=self.device).expand_as(torso_loc)
         top_torso_loc = torso_loc + math_utils.quat_apply(torso_rots, offset)
         return top_torso_loc, torso_rots
     
     def _get_left_foot_location(self) -> torch.Tensor:
-        foot_loc = self.robot.data.body_state_w[:, self.left_knee_idx[0], :3]
-        foot_rots = self.robot.data.body_state_w[:, self.left_knee_idx[0], 3:7]
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
+        foot_rots = foot_pose[:, 3:7]
         offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
         foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
         return foot_offset_loc, foot_rots
     
     def _get_right_foot_location(self) -> torch.Tensor:
-        foot_loc = self.robot.data.body_state_w[:, self.right_knee_idx[0], :3]
-        foot_rots = self.robot.data.body_state_w[:, self.right_knee_idx[0], 3:7]
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
+        foot_rots = foot_pose[:, 3:7]
         offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
         foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
         return foot_offset_loc, foot_rots
 
     def _get_left_foot_velocity(self) -> torch.Tensor:
-        shin_vel = self.robot.data.body_state_w[:, self.left_knee_idx[0], 7:10]
-        shin_ang_vel = self.robot.data.body_state_w[:, self.left_knee_idx[0], 10:13]
-        shin_rots = self.robot.data.body_state_w[:, self.left_knee_idx[0], 3:7]
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], 3:7]
         
         offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
         offset_world = math_utils.quat_apply(shin_rots, offset)
@@ -174,9 +178,9 @@ class CbriisaaclabEnv(DirectRLEnv):
         return shin_vel + torch.cross(shin_ang_vel, offset_world, dim=-1)
 
     def _get_right_foot_velocity(self) -> torch.Tensor:
-        shin_vel = self.robot.data.body_state_w[:, self.right_knee_idx[0], 7:10]
-        shin_ang_vel = self.robot.data.body_state_w[:, self.right_knee_idx[0], 10:13]
-        shin_rots = self.robot.data.body_state_w[:, self.right_knee_idx[0], 3:7]
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], 3:7]
         
         offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
         offset_world = math_utils.quat_apply(shin_rots, offset)
@@ -185,7 +189,7 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _visualize_markers(self):
         # Arrow locations for command and speed visualization (not true torso top/bottom)
-        torso_base_loc = self.robot.data.body_state_w[:, self.body_idx[0], :3]
+        torso_base_loc = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0], :3]
         arrow_loc = torch.vstack((torso_base_loc + self.marker_offset * 1.1, torso_base_loc + self.marker_offset))
         head_loc, head_rots = self._get_top_torso_location()
 
@@ -207,8 +211,8 @@ class CbriisaaclabEnv(DirectRLEnv):
         left_knee_loc = self._get_left_knee_location()
         right_knee_loc = self._get_right_knee_location()
         scales_knee = torch.ones_like(left_knee_loc, device=self.device) * 0.4
-        left_hip_rots = self.robot.data.body_state_w[:, self.left_hip_idx[0], 3:7]
-        right_hip_rots = self.robot.data.body_state_w[:, self.right_hip_idx[0], 3:7]
+        left_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.left_hip_idx[0], 3:7]
+        right_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.right_hip_idx[0], 3:7]
         
         # Marker indices for knees
         num_envs = self.cfg.scene.num_envs
@@ -289,10 +293,50 @@ class CbriisaaclabEnv(DirectRLEnv):
             left_foot_vel_indices, # left foot vel
             right_foot_vel_indices, # right foot vel
         ))
+
+        # The marker point-instancer contains nine entries per environment. Isaac Lab's
+        # generic partial-visualization filter can only infer the environment mapping when
+        # an instancer contains exactly one entry per environment, so apply the visualizer's
+        # selected environment IDs explicitly here.
+        visible_env_ids = self._get_marker_env_ids()
+        if visible_env_ids is not None:
+            marker_env_ids = torch.cat(
+                [visible_env_ids + block * num_envs for block in range(9)]
+            )
+            loc = loc[marker_env_ids]
+            rots = rots[marker_env_ids]
+            scales = scales[marker_env_ids]
+            marker_indices = marker_indices[marker_env_ids]
+
         self.visualization_markers.visualize(loc, rots, marker_indices=marker_indices, scales=scales)
 
+    def _get_marker_env_ids(self) -> torch.Tensor | None:
+        """Return the environment IDs selected by the active marker visualizer.
+
+        ``None`` means that every environment should be visualized. The cap-only,
+        non-random case is resolved here because ``BaseVisualizer`` represents it as
+        ``env_ids=None`` plus ``max_visible_envs``.
+        """
+        for visualizer in self.sim.visualizers:
+            if not visualizer.supports_markers():
+                continue
+
+            env_ids = visualizer.get_visualized_env_ids()
+            max_visible_envs = getattr(visualizer.cfg, "max_visible_envs", None)
+
+            if env_ids is None:
+                if max_visible_envs is None:
+                    return None
+                env_ids = range(min(max(int(max_visible_envs), 0), self.cfg.scene.num_envs))
+            elif max_visible_envs is not None:
+                env_ids = env_ids[:max(int(max_visible_envs), 0)]
+
+            return torch.as_tensor(list(env_ids), device=self.device, dtype=torch.long)
+
+        return None
+
     def _apply_action(self):
-        self.robot.set_joint_position_target(self.targets, joint_ids=[
+        self.robot.set_joint_position_target_index(target=self.targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],
@@ -377,6 +421,10 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
 
     def _get_dones(self):
+        # Isaac Lab 3.0 exposes simulation buffers through explicit torch views.
+        self.joint_pos = self.robot.data.joint_pos.torch
+        self.joint_vel = self.robot.data.joint_vel.torch
+
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         died = self.joint_pos[:, self.rotor_rod_dof_name_idx[0]] > self.cfg.termination_rod_angle
         head_loc, head_rots = self._get_top_torso_location()
@@ -391,8 +439,8 @@ class CbriisaaclabEnv(DirectRLEnv):
         num_resets = len(env_ids)
         
         # Get default joint states
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
-        joint_vel = self.robot.data.default_joint_vel[env_ids]
+        joint_pos = self.robot.data.default_joint_pos.torch[env_ids].clone()
+        joint_vel = self.robot.data.default_joint_vel.torch[env_ids].clone()
 
         # Set initial command to sitting for all resetting envs
         self.command[env_ids, :] = get_command(device=self.device, sit_time=self.cfg.command_info_cfg['sit_min'] // 2)
@@ -442,15 +490,17 @@ class CbriisaaclabEnv(DirectRLEnv):
             joint_pos.device,
         )
 
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        default_root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()
+        default_root_vel = self.robot.data.default_root_vel.torch[env_ids].clone()
+        default_root_pose[:, :3] += self.scene.env_origins[env_ids]
 
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
 
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        self.robot.write_root_pose_to_sim_index(root_pose=default_root_pose, env_ids=env_ids)
+        self.robot.write_root_velocity_to_sim_index(root_velocity=default_root_vel, env_ids=env_ids)
+        self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
+        self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
         self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
         self.actions[env_ids] = 0.0

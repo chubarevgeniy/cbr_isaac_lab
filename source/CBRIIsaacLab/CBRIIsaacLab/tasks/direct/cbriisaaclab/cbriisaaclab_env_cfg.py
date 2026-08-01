@@ -3,16 +3,17 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import math
+
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg, mdp
-from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
-from isaaclab.utils import configclass
-from isaaclab.managers import EventTermCfg as EventTerm
-import math
+from isaaclab.utils.configclass import configclass
+
 from CBRIIsaacLab.robots.CBRI import CBR_I_CONFIG
-import isaaclab.terrains as terrain_gen
 
 joint_names = [
     "body_Revolute_4",  # body_right_hip

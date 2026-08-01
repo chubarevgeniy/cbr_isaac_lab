@@ -50,49 +50,49 @@ CBR_I_CONFIG = ArticulationCfg(
     actuators={
         "base_rotor_actuator": ImplicitActuatorCfg(
             joint_names_expr=["Rock_Revolute_1"],
-            effort_limit=100.0,  # Adjusted effort limit
+            effort_limit_sim=100.0,  # Physics solver effort limit [N m]
             velocity_limit_sim=572957.0,  # Adjusted velocity limit
             stiffness=0.0,
             damping=0.0,
         ),
         "rotor_rod_actuator": ImplicitActuatorCfg(
             joint_names_expr=["bottom_rotor_Revolute_2"],
-            effort_limit=100.0,  # Adjusted effort limit
+            effort_limit_sim=100.0,  # Physics solver effort limit [N m]
             velocity_limit_sim=572957.0,  # Adjusted velocity limit
             stiffness=0.0,
             damping=0.0,
         ),
         "rod_body_actuator": ImplicitActuatorCfg(
             joint_names_expr=["rod_1_Revolute_3"],
-            effort_limit=100.0,  # Adjusted effort limit
+            effort_limit_sim=100.0,  # Physics solver effort limit [N m]
             velocity_limit_sim=572957.0,  # Adjusted velocity limit
             stiffness=0.0,
             damping=0.0,
         ),
         "body_right_hip_actuator": ImplicitActuatorCfg(
             joint_names_expr=["body_Revolute_4"],
-            effort_limit=5.5,
+            effort_limit_sim=5.5,
             velocity_limit_sim=572957.0,
             stiffness=73.3,
             damping=3.67,
         ),
         "body_left_hip_actuator": ImplicitActuatorCfg(
             joint_names_expr=["body_Revolute_5"],
-            effort_limit=5.5,
+            effort_limit_sim=5.5,
             velocity_limit_sim=572957.0,
             stiffness=73.3,
             damping=3.67,
         ),
         "right_hip_shin_actuator": ImplicitActuatorCfg(
             joint_names_expr=["right_hip_Revolute_6"],
-            effort_limit=5.5,
+            effort_limit_sim=5.5,
             velocity_limit_sim=572957.0,
             stiffness=73.3,
             damping=3.67,
         ),
         "left_hip_shin_actuator": ImplicitActuatorCfg(
             joint_names_expr=["left_hip_Revolute_7"],
-            effort_limit=5.5,
+            effort_limit_sim=5.5,
             velocity_limit_sim=572957.0,
             stiffness=73.3,
             damping=3.67,

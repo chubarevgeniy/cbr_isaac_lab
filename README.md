@@ -14,6 +14,17 @@ It allows you to develop in an isolated environment, outside of the core Isaac L
 
 ## Installation
 
+### Robot asset
+
+Place the CBR-I articulation at:
+
+```text
+source/CBRIIsaacLab/CBRIIsaacLab/robots/CBR-I.usda
+```
+
+The environment cannot be created without this file. The repository's
+`.gitattributes` stores USD assets with Git LFS.
+
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
   We recommend using the conda installation as it simplifies calling Python scripts from the terminal.
 
@@ -43,6 +54,18 @@ It allows you to develop in an isolated environment, outside of the core Isaac L
         # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
         python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
         ```
+
+    - Running this task in the Isaac Sim (Kit) visualizer while rendering at most 16 environments:
+
+        ```bash
+        python scripts/skrl/train.py \
+            --task=Template-Cbriisaaclab-Direct-v0 \
+            --viz kit \
+            --max_visible_envs 16
+        ```
+
+        `--max_visible_envs` changes rendering only; all simulated `env_*` prims remain listed in the Stage panel.
+        Use `--num_envs 16` instead if only 16 environments should be simulated and created.
 
     - Running a task with dummy agents:
 

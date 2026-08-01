@@ -13,6 +13,8 @@
 **/*.usda
 **/*.usdc
 **/*.usdz
+# The CBR-I articulation is a required runtime asset (tracked through Git LFS).
+!source/CBRIIsaacLab/CBRIIsaacLab/robots/CBR-I.usda
 
 # Python
 .DS_Store

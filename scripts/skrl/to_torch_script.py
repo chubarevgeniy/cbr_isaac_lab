@@ -71,12 +71,12 @@ def main():
     # Instantiate state-preprocessor
     if do_preprocessor:
         print("Instantiating Scaler...")
-        state_preprocessor = RunningStandardScaler(num_observations, device=device)
+        observation_preprocessor = RunningStandardScaler(num_observations, device=device)
 
     # Load checkpoints
     policy_path = os.path.join(args.checkpoint_dir, "best_policy.pt")
     if do_preprocessor:
-        scaler_path = os.path.join(args.checkpoint_dir, "best_state_preprocessor.pt")
+        scaler_path = os.path.join(args.checkpoint_dir, "best_observation_preprocessor.pt")
 
     if not os.path.exists(policy_path):
         raise FileNotFoundError(f"Policy checkpoint not found at {policy_path}")
@@ -88,13 +88,13 @@ def main():
     
     if do_preprocessor:
         print(f"Loading scaler from {scaler_path}")
-        state_preprocessor.load_state_dict(torch.load(scaler_path, map_location=device))
+        observation_preprocessor.load_state_dict(torch.load(scaler_path, map_location=device))
     else:
-        state_preprocessor = None
+        observation_preprocessor = None
 
     # Create export wrapper
     print("Creating ExportPolicy wrapper...")
-    export_model = ExportPolicy(policy, state_preprocessor).to(device).to(torch.float32)
+    export_model = ExportPolicy(policy, observation_preprocessor).to(device).to(torch.float32)
     export_model.eval()
 
     # Dummy input for tracing

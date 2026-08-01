@@ -58,7 +58,7 @@ import skrl
 from packaging import version
 
 # check for minimum supported skrl version
-SKRL_VERSION = "1.4.3"
+SKRL_VERSION = "2.1.0"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
     skrl.logger.error(
         f"Unsupported skrl version: {skrl.__version__}. "
@@ -70,7 +70,6 @@ from skrl.utils.runner.torch import Runner
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 
 from isaaclab.envs import (
-    DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
@@ -146,7 +145,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
 
     # convert to single-agent instance if required by the RL algorithm
-    if isinstance(env.unwrapped, DirectMARLEnv) and algorithm in ["ppo"]:
+    if isinstance(env.unwrapped.cfg, DirectMARLEnvCfg) and algorithm in ["ppo"]:
         env = multi_agent_to_single_agent(env)
 
     # wrap around environment for skrl
@@ -158,18 +157,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
     runner.agent.load(resume_path)
-    runner.agent.set_running_mode("eval")
+    runner.agent.enable_training_mode(False, apply_to_models=True)
 
     # Extract policy and scaler
     policy = runner.agent.policy
-    state_preprocessor = runner.agent._state_preprocessor
+    observation_preprocessor = runner.agent._observation_preprocessor
     
     scaler = None
-    if isinstance(state_preprocessor, RunningStandardScaler):
-        scaler = state_preprocessor
+    if isinstance(observation_preprocessor, RunningStandardScaler):
+        scaler = observation_preprocessor
         print("[INFO] Found RunningStandardScaler.")
     else:
-        print(f"[INFO] Preprocessor is {type(state_preprocessor)}. Assuming no scaling needed or not supported for export.")
+        print(
+            f"[INFO] Preprocessor is {type(observation_preprocessor)}. "
+            "Assuming no scaling needed or not supported for export."
+        )
 
     device = runner.agent.device
 

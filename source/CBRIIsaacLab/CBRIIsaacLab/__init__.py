@@ -10,5 +10,5 @@ Python module serving as a project/extension template.
 # Register Gym environments.
 from .tasks import *
 
-# Register UI extensions.
-from .ui_extension_example import *
+# The UI module imports Kit-only packages. It is registered separately in
+# extension.toml so normal/headless package imports remain Omni-free.

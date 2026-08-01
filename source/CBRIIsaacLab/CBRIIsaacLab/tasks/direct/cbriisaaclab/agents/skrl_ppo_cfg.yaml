@@ -7,14 +7,16 @@ models:
   separate: True
   policy:  # see gaussian_model parameters
     class: GaussianMixin
-    clip_actions: True
+    # Isaac Lab's integer action-space specification is unbounded in skrl 2.1.
+    # The environment clamps actions to [-1, 1] before scaling them.
+    clip_actions: False
     clip_log_std: True
     min_log_std: -20.0
     max_log_std: 2.0
     initial_log_std: 0.0
     network:
       - name: net
-        input: STATES
+        input: OBSERVATIONS
         layers: [128, 64, 32]
         activations: elu
     output: ACTIONS
@@ -23,7 +25,7 @@ models:
     clip_actions: False
     network:
       - name: net
-        input: STATES
+        input: OBSERVATIONS
         layers: [128, 64, 32]
         activations: elu
     output: ONE
@@ -44,15 +46,14 @@ agent:
   learning_epochs: 8
   mini_batches: 8
   discount_factor: 0.995
-  lambda: 0.95
+  gae_lambda: 0.95
   learning_rate: 5.0e-04
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.008
     min_lr: 2.0e-04
-  # state_preprocessor: RunningStandardScaler
-  state_preprocessor: RunningStandardScaler
-  state_preprocessor_kwargs: null
+  observation_preprocessor: RunningStandardScaler
+  observation_preprocessor_kwargs: null
   # value_preprocessor: RunningStandardScaler
   value_preprocessor: RunningStandardScaler
   value_preprocessor_kwargs: null
@@ -61,7 +62,6 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
-  clip_predicted_values: True
   entropy_loss_scale: 0.01
   value_loss_scale: 2.0
   kl_threshold: 0.0
