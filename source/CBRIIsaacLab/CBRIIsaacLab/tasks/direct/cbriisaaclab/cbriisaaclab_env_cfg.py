@@ -5,11 +5,15 @@
 
 import math
 
+import gymnasium as gym
+import numpy as np
+
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg, mdp
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils.configclass import configclass
 
@@ -71,7 +75,9 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     decimation = 5
     episode_length_s = 25.0
     # - spaces definition
-    action_space = 4
+    # Actions are normalized absolute joint-target commands. The environment
+    # converts them to joint positions and applies a target slew-rate limit.
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
     observation_space = 19
     state_space = 0
 
@@ -85,10 +91,15 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # robot(s)
     robot_cfg: ArticulationCfg = CBR_I_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
+    feet_contact_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/.*_shin",
+        history_length=3,
+        update_period=1 / phys_sps,
+    )
 
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
 
     # custom parameters/scales
     # - controllable joint
@@ -106,11 +117,17 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     left_foot_offset_from_shin_loc = [0.14,0,0.08]
     right_foot_offset_from_shin_loc = [0.14,0,-0.08]
 
-    # - action scale
-    action_hip_scale = 0.1  # rad per step
-    action_knee_scale = 0.1  # rad per step
+    # - absolute target change penalty
+    target_change_penalty_scale = 0.01  # penalty per rad^2 of target change
     # - reward scales
     rew_scale_alive = 1.0
+    feet_contact_force_threshold = 1.0
+    feet_slide_penalty_scale = 0.03
+    feet_clearance_reward_scale = 0.03
+    feet_clearance_height_scale = 0.07
+    feet_clearance_speed_scale = 3.0
+    moving_command_threshold = 0.15
+    reward_log_interval = 100
     # - reset states/conditions
     termination_rod_angle = 8.9 * math.pi / 180.0
     termination_head_height = 0.1
