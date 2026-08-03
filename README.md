@@ -157,8 +157,8 @@ The initial factors are:
 | C | `agent.mini_batches=4` |
 
 For a fast triage pass, run the combined gate `A+B+C` first. If its full training trajectory,
-physical metrics, and checkpoint video do not show a meaningful difference from baseline, the
-three candidates can be deprioritized together. If the gate changes behavior, run `A`, `B`, and
+physical metrics do not show a meaningful difference from baseline, the three candidates can be
+deprioritized together. If the gate changes behavior, run `A`, `B`, and
 `C` independently, followed by selected combinations such as `A+B`, `A+C`, and `B+C` to attribute
 the effect. Each branch must change only the listed values relative to the common base; the report
 should distinguish the individual effect from the interaction effect.
@@ -171,24 +171,6 @@ in parallel, use the same reduced `--num_envs` for the whole comparison cohort (
 `1024` per process), and do not compare that cohort's raw speed directly with a `2048`-environment
 cohort. Keep each process on a separate log directory and stop the pair if memory use approaches
 the device limit.
-
-### Checkpoint video
-
-Record one complete `25 s` episode from the last checkpoint with 16 environments (`0.02 s` per
-environment step, so use `--video_length=1250`):
-
-```bash
-VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/play.py \
-    --task=Template-Cbriisaaclab-Direct-v0 \
-    --checkpoint=logs/skrl/cbr_i_ppo/<run>/checkpoints/<checkpoint>.pt \
-    --num_envs=16 \
-    --video \
-    --video_length=1250
-```
-
-The MP4 is written to `<run>/videos/play/`. The playback script also adds it as an
-`Evaluation/video/<checkpoint>` TensorBoard video summary in the same run directory when the
-optional decoder is available.
 
 ## Troubleshooting
 

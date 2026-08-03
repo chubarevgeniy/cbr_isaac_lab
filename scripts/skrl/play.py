@@ -70,7 +70,6 @@ import os
 import random
 import time
 import torch
-from pathlib import Path
 
 import skrl
 from packaging import version
@@ -109,25 +108,6 @@ import CBRIIsaacLab.tasks  # noqa: F401
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
-
-
-def write_video_tensorboard_summary(log_dir: str, video_path: Path, tag: str, fps: float) -> None:
-    """Add a recorded MP4 to the run's TensorBoard event stream when possible."""
-    try:
-        import imageio.v3 as imageio
-        from torch.utils.tensorboard import SummaryWriter
-
-        frames = imageio.imread(video_path, index=None)
-        if frames.ndim != 4 or frames.shape[-1] not in (3, 4):
-            raise ValueError(f"expected a video tensor shaped [T, H, W, C], got {frames.shape}")
-        video = torch.from_numpy(frames[..., :3]).permute(0, 3, 1, 2).unsqueeze(0)
-        writer = SummaryWriter(log_dir=log_dir)
-        writer.add_video(tag, video, global_step=0, fps=max(1, round(fps)))
-        writer.flush()
-        writer.close()
-        print(f"[INFO] Added video TensorBoard summary: tag={tag}, path={video_path}")
-    except Exception as exc:  # keep checkpoint playback usable if optional decoding fails
-        print(f"[WARN] Could not add video to TensorBoard: {exc}")
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -249,16 +229,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
 
     # close the simulator
     env.close()
-    if args_cli.video:
-        video_dir = Path(log_dir) / "videos" / "play"
-        video_paths = sorted(video_dir.glob("*.mp4"), key=lambda path: path.stat().st_mtime)
-        if video_paths:
-            write_video_tensorboard_summary(
-                log_dir=log_dir,
-                video_path=video_paths[-1],
-                tag=f"Evaluation/video/{Path(resume_path).stem}",
-                fps=1.0 / dt,
-            )
 
 
 if __name__ == "__main__":
