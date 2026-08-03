@@ -101,7 +101,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     left_hip_shin_dof_name = "left_hip_Revolute_7"
 
     # initial tilt angle variation
-    initial_tilt_angle_variation = 1.0/180 * math.pi  # 20 degrees in radians
+    initial_tilt_angle_variation = 0.0
     head_offset_from_torso_loc = [0.04,0.16,0]
     left_foot_offset_from_shin_loc = [0.14,0,0.08]
     right_foot_offset_from_shin_loc = [0.14,0,-0.08]
