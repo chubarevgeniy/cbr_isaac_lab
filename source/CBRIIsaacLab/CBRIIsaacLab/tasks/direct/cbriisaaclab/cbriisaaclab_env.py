@@ -13,7 +13,6 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.sensors import ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils import math as math_utils
@@ -39,9 +38,6 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.right_hip_idx,_ = self.robot.find_bodies('right_hip')
         self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
         self.right_knee_idx,_ = self.robot.find_bodies('right_shin')
-        self.left_foot_contact_idx, _ = self.feet_contact_sensor.find_sensors("left_shin")
-        self.right_foot_contact_idx, _ = self.feet_contact_sensor.find_sensors("right_shin")
-        self.feet_contact_ids = [self.left_foot_contact_idx[0], self.right_foot_contact_idx[0]]
 
         self.noise_hip_knee_indices = [
             self.body_right_hip_dof_name_idx[0],
@@ -56,11 +52,6 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.right_hip_shin_dof_name_idx[0],
             self.left_hip_shin_dof_name_idx[0]
         ]
-        self.sitting_joint_indices = [
-            self.rotor_rod_dof_name_idx[0],
-            self.rod_body_dof_name_idx[0],
-            *self.actuated_dof_indices,
-        ]
 
         # Pre-compute indices for observations to avoid fragile slicing
         self.obs_joint_pos_indices = torch.tensor(
@@ -70,57 +61,30 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.joint_pos = self.robot.data.joint_pos.torch
         self.joint_vel = self.robot.data.joint_vel.torch
 
-        # Constant tensors used in every environment step. Creating them inside the
-        # kinematics helpers launches extra CUDA work and allocator operations.
-        self._head_offset = torch.tensor(self.cfg.head_offset_from_torso_loc, device=self.device)
-        self._left_foot_offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device)
-        self._right_foot_offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device)
-        self._up_vec = torch.tensor([0.0, 0.0, 1.0], device=self.device)
-        self._marker_base_scale = torch.tensor([0.25, 0.25, 0.5], device=self.device)
-        self._foot_arrow_base_scale = torch.tensor([1.0, 0.2, 0.2], device=self.device)
-        self._sit_reset_command = get_command(
-            device=self.device,
-            sit_time=self.cfg.command_info_cfg['sit_min'] // 2,
-        )
-
         # Initialize command handling
-        self.command = torch.zeros((self.num_envs, 5), device=self.device)
-        self.command[:] = self._sit_reset_command
+        self.command = torch.zeros((self.cfg.scene.num_envs,5), device=self.device)
+        self.command[:,[0,1,2,3,4]] = get_command(device = self.device,sit_time=self.cfg.command_info_cfg['sit_min']//2)
         # Setup visualization for commands.
         self.visualization_markers = define_markers()
-        self.marker_offset = torch.zeros((self.num_envs, 3), device=self.device)
+        self.marker_offset = torch.zeros((self.cfg.scene.num_envs, 3), device=self.device)
         self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
-        self.actions = torch.zeros((self.num_envs, 4), device=self.device)
-        self.targets = torch.zeros((self.num_envs, 4), device=self.device)
-        self.target_delta = torch.zeros((self.num_envs, 4), device=self.device)
-        self.sitting_target = torch.tensor(
-            [
-                self.cfg.sitting_target_state["rotor_rod"],
-                self.cfg.sitting_target_state["rod_body"],
-                self.cfg.sitting_target_state["body_right_hip"],
-                self.cfg.sitting_target_state["body_left_hip"],
-                self.cfg.sitting_target_state["right_hip_shin"],
-                self.cfg.sitting_target_state["left_hip_shin"],
-            ],
-            dtype=torch.float32,
-            device=self.device,
-        )
+        self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
 
     def _setup_scene(self):
         # Initialize the robot
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.scene.articulations["robot"] = self.robot
-
-        # Contact forces are read from the shin rigid bodies (the feet are part of them).
-        self.feet_contact_sensor = ContactSensor(self.cfg.feet_contact_sensor_cfg)
-        self.scene.sensors["feet_contact_sensor"] = self.feet_contact_sensor
 
         # Add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
 
-        # Clone environments after registering assets and sensors.
+        # Clone environments before registering assets, matching the Isaac Lab 3.0
+        # direct-workflow scene setup order.
         self.scene.clone_environments(copy_from_source=False)
+
+        # Add robot to the scene
+        self.scene.articulations["robot"] = self.robot
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -131,12 +95,12 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def update_and_sample_commands(self):
         # update timers
-        self.command[:, 1:4].add_(1)
+        self.command[:,[1,2,3]] += 1
 
         # from sit to standing
         sit_long_idx = (self.command[:,1] >= self.cfg.command_info_cfg['sit_min']) & (self.command[:,0] == 1)
         prob_to_stand = (self.command[:,1] - self.cfg.command_info_cfg['sit_min'])/(self.cfg.command_info_cfg['sit_max'] - self.cfg.command_info_cfg['sit_min'])
-        commands_to_change = (torch.rand(self.num_envs, device=self.device) < prob_to_stand) & sit_long_idx
+        commands_to_change = (torch.rand(self.cfg.scene.num_envs, device=self.device) < prob_to_stand) & sit_long_idx
         self.command[commands_to_change,0] = 0
         self.command[commands_to_change,1] = 0
         self.command[commands_to_change,2] = 0
@@ -146,7 +110,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         #from standing to sit
         walk_long_idx = (self.command[:,2] >= self.cfg.command_info_cfg['walk_min']) & (self.command[:,0] == 0)
         prob_to_sit = (self.command[:,2] - self.cfg.command_info_cfg['walk_min'])/(self.cfg.command_info_cfg['walk_max'] - self.cfg.command_info_cfg['walk_min'])
-        commands_to_change = (torch.rand(self.num_envs, device=self.device) < prob_to_sit) & walk_long_idx
+        commands_to_change = (torch.rand(self.cfg.scene.num_envs, device=self.device) < prob_to_sit) & walk_long_idx
         self.command[commands_to_change,0] = 1
         self.command[commands_to_change,1] = 0
         self.command[commands_to_change,2] = 0
@@ -157,34 +121,19 @@ class CbriisaaclabEnv(DirectRLEnv):
         speed_long_idx = (self.command[:,3] >= self.cfg.command_info_cfg['speed_min']) & (self.command[:,0] == 0)
         prob_to_speed = (self.command[:,3] - self.cfg.command_info_cfg['speed_min'])/(self.cfg.command_info_cfg['speed_max'] - self.cfg.command_info_cfg['speed_min'])
         # if it is alrady long standing but speed min is large it is allowed to set new target speed
-        commands_to_change = speed_long_idx & (torch.rand(self.num_envs, device=self.device) < prob_to_speed)
-        sampled_speeds = sample_uniform(-1.5, 1.5, (self.num_envs,), self.device)
-        self.command[:, 3].masked_fill_(commands_to_change, 0.0)
-        self.command[:, 4] = torch.where(commands_to_change, sampled_speeds, self.command[:, 4])
+        commands_to_change = speed_long_idx & (torch.rand(self.cfg.scene.num_envs, device=self.device) < prob_to_speed)
+        commands_to_change_number = int(commands_to_change.sum().item())
+        if(commands_to_change_number>0):
+            self.command[commands_to_change,3] = 0
+            self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
-        # Interpret the policy output as an absolute normalized target. The
-        # target is mapped directly into the joint limits; smoothness is learned
-        # through the quadratic target-change penalty instead of a hard limiter.
-        actions = actions.clone().clamp(-1.0, 1.0)
+        self.actions = actions.clone()
+        scaled_actions = self._scale_actions(actions)
+        self.targets += scaled_actions
         limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
-        desired_targets = limits[..., 0] + 0.5 * (actions + 1.0) * (limits[..., 1] - limits[..., 0])
-        self.target_delta.copy_(desired_targets)
-        self.target_delta.sub_(self.targets)
-        self.targets.copy_(desired_targets)
-        if self._should_visualize_markers():
-            self._visualize_markers()
-
-    def _should_visualize_markers(self) -> bool:
-        """Return whether an active, unpaused visualizer needs marker data."""
-        if not self.render_enabled:
-            return False
-        return any(
-            visualizer.supports_markers()
-            and getattr(visualizer.cfg, "enable_markers", True)
-            and not visualizer.is_rendering_paused()
-            for visualizer in self.sim.visualizers
-        )
+        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
+        self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
         left_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], :3]
@@ -194,86 +143,84 @@ class CbriisaaclabEnv(DirectRLEnv):
         right_knee_loc = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], :3]
         return right_knee_loc
 
-    def _get_top_torso_location(
-        self, env_ids: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        torso_pose_w = self.robot.data.body_link_pose_w.torch
-        torso_pose = (
-            torso_pose_w[:, self.body_idx[0]]
-            if env_ids is None
-            else torso_pose_w[env_ids, self.body_idx[0]]
-        )
+    def _get_top_torso_location(self) -> torch.Tensor:
+        torso_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
         torso_loc = torso_pose[:, :3]
         torso_rots = torso_pose[:, 3:7]
-        top_torso_loc = torso_loc + math_utils.quat_apply(torso_rots, self._head_offset.expand_as(torso_loc))
+        offset = torch.tensor(self.cfg.head_offset_from_torso_loc, device=self.device).expand_as(torso_loc)
+        top_torso_loc = torso_loc + math_utils.quat_apply(torso_rots, offset)
         return top_torso_loc, torso_rots
-
-    def _get_foot_state(
-        self,
-        body_idx: int,
-        local_offset: torch.Tensor,
-        env_ids: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute foot position, rotation and velocity with one quaternion transform."""
-        body_pose_w = self.robot.data.body_link_pose_w.torch
-        body_velocity_w = self.robot.data.body_link_vel_w.torch
-        if env_ids is None:
-            foot_pose = body_pose_w[:, body_idx]
-            body_velocity = body_velocity_w[:, body_idx]
-        else:
-            foot_pose = body_pose_w[env_ids, body_idx]
-            body_velocity = body_velocity_w[env_ids, body_idx]
+    
+    def _get_left_foot_location(self) -> torch.Tensor:
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
         foot_rots = foot_pose[:, 3:7]
-        offset_world = math_utils.quat_apply(foot_rots, local_offset.expand(foot_rots.shape[0], -1))
-        foot_location = foot_pose[:, :3] + offset_world
+        offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
+        foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
+        return foot_offset_loc, foot_rots
+    
+    def _get_right_foot_location(self) -> torch.Tensor:
+        foot_pose = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0]]
+        foot_loc = foot_pose[:, :3]
+        foot_rots = foot_pose[:, 3:7]
+        offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(foot_loc)
+        foot_offset_loc = foot_loc + math_utils.quat_apply(foot_rots, offset)
+        return foot_offset_loc, foot_rots
 
-        foot_velocity = body_velocity[:, :3] + torch.cross(body_velocity[:, 3:6], offset_world, dim=-1)
-        return foot_location, foot_rots, foot_velocity
+    def _get_left_foot_velocity(self) -> torch.Tensor:
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.left_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.left_knee_idx[0], 3:7]
+        
+        offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
+        offset_world = math_utils.quat_apply(shin_rots, offset)
+        
+        return shin_vel + torch.cross(shin_ang_vel, offset_world, dim=-1)
+
+    def _get_right_foot_velocity(self) -> torch.Tensor:
+        shin_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], :3]
+        shin_ang_vel = self.robot.data.body_link_vel_w.torch[:, self.right_knee_idx[0], 3:6]
+        shin_rots = self.robot.data.body_link_pose_w.torch[:, self.right_knee_idx[0], 3:7]
+        
+        offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device).expand_as(shin_vel)
+        offset_world = math_utils.quat_apply(shin_rots, offset)
+        
+        return shin_vel + torch.cross(shin_ang_vel, offset_world, dim=-1)
 
     def _visualize_markers(self):
-        visible_env_ids = self._get_marker_env_ids()
-        if visible_env_ids is None:
-            env_selection = slice(None)
-            num_envs = self.num_envs
-        else:
-            if visible_env_ids.numel() == 0:
-                return
-            env_selection = visible_env_ids
-            num_envs = visible_env_ids.numel()
-
         # Arrow locations for command and speed visualization (not true torso top/bottom)
-        torso_base_loc = self.robot.data.body_link_pose_w.torch[env_selection, self.body_idx[0], :3]
-        marker_offset = self.marker_offset[env_selection]
-        arrow_loc = torch.vstack((torso_base_loc + marker_offset * 1.1, torso_base_loc + marker_offset))
-        head_loc, head_rots = self._get_top_torso_location(visible_env_ids)
+        torso_base_loc = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0], :3]
+        arrow_loc = torch.vstack((torso_base_loc + self.marker_offset * 1.1, torso_base_loc + self.marker_offset))
+        head_loc, head_rots = self._get_top_torso_location()
 
         # Rotation for arrows
-        ang_speed = self.joint_vel[env_selection, self.base_rotor_dof_name_idx[0]]
-        base_angle = -self.joint_pos[env_selection, self.base_rotor_dof_name_idx[0]]
-        command_speed = self.command[env_selection, 4]
-        rots_actual = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(ang_speed)*torch.pi/2, self._up_vec)
-        rots_command = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(command_speed)*torch.pi/2, self._up_vec)
+        ang_speed = self.joint_vel[:, self.base_rotor_dof_name_idx[0]]
+        base_angle = -self.joint_pos[:, self.base_rotor_dof_name_idx[0]]
+        up_vec = torch.tensor([0.0, 0.0, 1.0], device=self.device)
+        rots_actual = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(ang_speed)*torch.pi/2, up_vec)
+        rots_command = math_utils.quat_from_angle_axis(base_angle - torch.pi/2 - torch.sign(self.command[:, 4])*torch.pi/2, up_vec)
         arrow_rots = torch.vstack((rots_actual, rots_command))
 
         # Scaling for arrows
-        command_scale = (1 + torch.abs(command_speed)).unsqueeze(1) * self._marker_base_scale
-        actual_scale = (1 + torch.abs(ang_speed)).unsqueeze(1) * self._marker_base_scale
+        base_scale = torch.tensor([0.25, 0.25, 0.5], device=self.device)
+        command_scale = (1 + torch.abs(self.command[:, 4])).unsqueeze(1) * base_scale
+        actual_scale = (1 + torch.abs(ang_speed)).unsqueeze(1) * base_scale
         arrow_scales = torch.vstack((actual_scale, command_scale))
 
         # Knees
-        body_pose_w = self.robot.data.body_link_pose_w.torch
-        left_knee_loc = body_pose_w[env_selection, self.left_knee_idx[0], :3]
-        right_knee_loc = body_pose_w[env_selection, self.right_knee_idx[0], :3]
+        left_knee_loc = self._get_left_knee_location()
+        right_knee_loc = self._get_right_knee_location()
         scales_knee = torch.ones_like(left_knee_loc, device=self.device) * 0.4
-        left_hip_rots = body_pose_w[env_selection, self.left_hip_idx[0], 3:7]
-        right_hip_rots = body_pose_w[env_selection, self.right_hip_idx[0], 3:7]
+        left_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.left_hip_idx[0], 3:7]
+        right_hip_rots = self.robot.data.body_link_pose_w.torch[:, self.right_hip_idx[0], 3:7]
         
         # Marker indices for knees
+        num_envs = self.cfg.scene.num_envs
         left_knee_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
         right_knee_indices = torch.full((num_envs,), 2, device=self.device, dtype=torch.long)
 
         # Check for low knee condition when not sitting
-        is_walking_command = self.command[env_selection, 0] == 0
+        is_walking_command = self.command[:, 0] == 0
         
         # Left knee
         left_knee_low = (left_knee_loc[:, 2] < 0.1) & is_walking_command
@@ -284,12 +231,8 @@ class CbriisaaclabEnv(DirectRLEnv):
         right_knee_indices[right_knee_low] = 3 # index for low_knee marker
 
         # Feet
-        left_foot_loc, left_foot_rots, left_foot_vel = self._get_foot_state(
-            self.left_knee_idx[0], self._left_foot_offset, visible_env_ids
-        )
-        right_foot_loc, right_foot_rots, right_foot_vel = self._get_foot_state(
-            self.right_knee_idx[0], self._right_foot_offset, visible_env_ids
-        )
+        left_foot_loc, left_foot_rots = self._get_left_foot_location()
+        right_foot_loc, right_foot_rots = self._get_right_foot_location()
         scales_foot = torch.ones_like(left_foot_loc, device=self.device) * 0.4
 
         # Marker indices for feet
@@ -304,6 +247,9 @@ class CbriisaaclabEnv(DirectRLEnv):
         right_foot_indices[right_foot_low] = 3 # index for low_knee marker (re-using for low foot)
 
         # Feet Velocity Markers
+        left_foot_vel = self._get_left_foot_velocity()
+        right_foot_vel = self._get_right_foot_velocity()
+        
         left_foot_vel_hor = left_foot_vel[:, :2]
         right_foot_vel_hor = right_foot_vel[:, :2]
         
@@ -311,17 +257,19 @@ class CbriisaaclabEnv(DirectRLEnv):
         right_foot_speed_hor = torch.norm(right_foot_vel_hor, dim=-1)
         
         # Rotations for velocity arrows
+        up_vec = torch.tensor([0.0, 0.0, 1.0], device=self.device)
         left_foot_angle = torch.atan2(left_foot_vel_hor[:, 1], left_foot_vel_hor[:, 0])
         right_foot_angle = torch.atan2(right_foot_vel_hor[:, 1], right_foot_vel_hor[:, 0])
         
-        left_foot_vel_rots = math_utils.quat_from_angle_axis(left_foot_angle, self._up_vec)
-        right_foot_vel_rots = math_utils.quat_from_angle_axis(right_foot_angle, self._up_vec)
+        left_foot_vel_rots = math_utils.quat_from_angle_axis(left_foot_angle, up_vec)
+        right_foot_vel_rots = math_utils.quat_from_angle_axis(right_foot_angle, up_vec)
         
         # Scales for velocity arrows
-        left_foot_vel_scales = self._foot_arrow_base_scale.unsqueeze(0).expand(num_envs, 3).clone()
+        foot_arrow_base_scale = torch.tensor([1.0, 0.2, 0.2], device=self.device)
+        left_foot_vel_scales = foot_arrow_base_scale.unsqueeze(0).expand(num_envs, 3).clone()
         left_foot_vel_scales[:, 0] *= left_foot_speed_hor
         
-        right_foot_vel_scales = self._foot_arrow_base_scale.unsqueeze(0).expand(num_envs, 3).clone()
+        right_foot_vel_scales = foot_arrow_base_scale.unsqueeze(0).expand(num_envs, 3).clone()
         right_foot_vel_scales[:, 0] *= right_foot_speed_hor
         
         # Indices for velocity arrows
@@ -346,6 +294,20 @@ class CbriisaaclabEnv(DirectRLEnv):
             right_foot_vel_indices, # right foot vel
         ))
 
+        # The marker point-instancer contains nine entries per environment. Isaac Lab's
+        # generic partial-visualization filter can only infer the environment mapping when
+        # an instancer contains exactly one entry per environment, so apply the visualizer's
+        # selected environment IDs explicitly here.
+        visible_env_ids = self._get_marker_env_ids()
+        if visible_env_ids is not None:
+            marker_env_ids = torch.cat(
+                [visible_env_ids + block * num_envs for block in range(9)]
+            )
+            loc = loc[marker_env_ids]
+            rots = rots[marker_env_ids]
+            scales = scales[marker_env_ids]
+            marker_indices = marker_indices[marker_env_ids]
+
         self.visualization_markers.visualize(loc, rots, marker_indices=marker_indices, scales=scales)
 
     def _get_marker_env_ids(self) -> torch.Tensor | None:
@@ -365,7 +327,7 @@ class CbriisaaclabEnv(DirectRLEnv):
             if env_ids is None:
                 if max_visible_envs is None:
                     return None
-                env_ids = range(min(max(int(max_visible_envs), 0), self.num_envs))
+                env_ids = range(min(max(int(max_visible_envs), 0), self.cfg.scene.num_envs))
             elif max_visible_envs is not None:
                 env_ids = env_ids[:max(int(max_visible_envs), 0)]
 
@@ -435,100 +397,239 @@ class CbriisaaclabEnv(DirectRLEnv):
         }
     
     def _get_rewards(self):
-        contact_forces_w = self.feet_contact_sensor.data.net_forces_w_history.torch
-        feet_contact = (
-            torch.linalg.vector_norm(contact_forces_w[:, :, self.feet_contact_ids, :], dim=-1).amax(dim=1)
-            > self.cfg.feet_contact_force_threshold
-        )
-        left_foot_contact = feet_contact[:, 0]
-        right_foot_contact = feet_contact[:, 1]
-        left_foot_location, _, left_foot_velocity = self._get_foot_state(
-            self.left_knee_idx[0], self._left_foot_offset
-        )
-        right_foot_location, _, right_foot_velocity = self._get_foot_state(
-            self.right_knee_idx[0], self._right_foot_offset
-        )
+        body_vel = self.joint_vel[:, self.base_rotor_dof_name_idx]
+        body_height = self.joint_pos[:, self.rotor_rod_dof_name_idx]
+        body_angle = self.joint_pos[:, self.rod_body_dof_name_idx]
+        right_hip_angle = self.joint_pos[:, self.body_right_hip_dof_name_idx]
+        left_hip_angle = self.joint_pos[:, self.body_left_hip_dof_name_idx]
+        right_knee_angle = self.joint_pos[:, self.right_hip_shin_dof_name_idx]
+        left_knee_angle = self.joint_pos[:, self.left_hip_shin_dof_name_idx]
+        right_hip_vel = self.joint_vel[:, self.body_right_hip_dof_name_idx]
+        left_hip_vel = self.joint_vel[:, self.body_left_hip_dof_name_idx]
+        right_knee_vel = self.joint_vel[:, self.right_hip_shin_dof_name_idx]
+        left_knee_vel = self.joint_vel[:, self.left_hip_shin_dof_name_idx]
+        left_knee_location = self._get_left_knee_location()
+        right_knee_location = self._get_right_knee_location()
+        left_foot_location = self._get_left_foot_location()[0]
+        right_foot_location = self._get_right_foot_location()[0]
+        left_foot_vel = self._get_left_foot_velocity()
+        right_foot_vel = self._get_right_foot_velocity()
+        command = self.command[:, [0, 4]]
 
-        (
-            rewards,
-            velocity_tracking_reward,
-            feet_slide_penalty,
-            feet_clearance_reward,
-            target_change_penalty,
-            alive_reward,
-            termination_penalty,
-            positive_velocity_tracking,
-            negative_velocity_tracking,
-            positive_speed_error,
-            negative_speed_error,
-        ) = compute_rewards(
-            body_vel=self.joint_vel[:, self.base_rotor_dof_name_idx],
-            height_joint_angle=self.joint_pos[:, self.rotor_rod_dof_name_idx],
-            body_angle=self.joint_pos[:, self.rod_body_dof_name_idx],
-            actuated_joint_velocities=self.joint_vel[:, self.actuated_dof_indices],
-            sitting_joint_positions=self.joint_pos[:, self.sitting_joint_indices],
-            sitting_target=self.sitting_target,
-            left_knee_location=self._get_left_knee_location(),
-            right_knee_location=self._get_right_knee_location(),
+        rewards = compute_rewards(
+            body_vel=body_vel,
+            body_height=body_height,
+            body_angle=body_angle,
+            right_hip_angle=right_hip_angle,
+            left_hip_angle=left_hip_angle,
+            right_knee_angle=right_knee_angle,
+            left_knee_angle=left_knee_angle,
+            right_hip_vel=right_hip_vel,
+            left_hip_vel=left_hip_vel,
+            right_knee_vel=right_knee_vel,
+            left_knee_vel=left_knee_vel,
+            left_knee_location=left_knee_location,
+            right_knee_location=right_knee_location,
             left_foot_location=left_foot_location,
             right_foot_location=right_foot_location,
-            left_foot_vel=left_foot_velocity,
-            right_foot_vel=right_foot_velocity,
-            left_foot_contact=left_foot_contact,
-            right_foot_contact=right_foot_contact,
+            left_foot_vel=left_foot_vel,
+            right_foot_vel=right_foot_vel,
             reset_terminated=self.reset_terminated,
-            command=self.command[:,[0,4]],
-            target_delta=self.target_delta,
-            velocity_tracking_reward_scale=self.cfg.velocity_tracking_reward_scale,
-            velocity_tracking_error_std=self.cfg.velocity_tracking_error_std,
-            walking_height_joint_target=self.cfg.walking_height_joint_target,
-            walking_height_joint_penalty_scale=self.cfg.walking_height_joint_penalty_scale,
-            walking_body_angle_target=self.cfg.walking_body_angle_target,
-            walking_body_angle_penalty_scale=self.cfg.walking_body_angle_penalty_scale,
-            walking_joint_velocity_penalty_scale=self.cfg.walking_joint_velocity_penalty_scale,
-            low_knee_height_threshold=self.cfg.low_knee_height_threshold,
-            low_knee_penalty_scale=self.cfg.low_knee_penalty_scale,
-            sitting_joint_position_penalty_scale=self.cfg.sitting_joint_position_penalty_scale,
-            sitting_velocity_penalty_scale=self.cfg.sitting_velocity_penalty_scale,
-            sitting_reward_scale=self.cfg.sitting_reward_scale,
-            alive_reward_scale=self.cfg.alive_reward_scale,
-            termination_penalty_scale=self.cfg.termination_penalty_scale,
-            target_change_penalty_scale=self.cfg.target_change_penalty_scale,
-            feet_slide_penalty_scale=self.cfg.feet_slide_penalty_scale,
-            feet_clearance_reward_scale=self.cfg.feet_clearance_reward_scale,
-            feet_clearance_height_scale=self.cfg.feet_clearance_height_scale,
-            feet_clearance_speed_scale=self.cfg.feet_clearance_speed_scale,
-            moving_command_threshold=self.cfg.moving_command_threshold,
+            command=command,
+            actions=self.actions,
         )
 
-        # SKRL calls .item() for every scalar under environment_info. Publishing
-        # these values every step serializes the CUDA stream, so log them sparsely.
         self.extras.pop("log", None)
-        if self.common_step_counter % self.cfg.reward_log_interval == 0:
-            walking_command = self.command[:, 0] == 0
-            positive_speed_command = walking_command & (
-                self.command[:, 4] > self.cfg.moving_command_threshold
+        if self.common_step_counter % self.cfg.metrics_log_interval == 0:
+            self.extras["log"] = self._get_physical_metrics(
+                body_vel=body_vel,
+                body_height=body_height,
+                body_angle=body_angle,
+                right_hip_angle=right_hip_angle,
+                left_hip_angle=left_hip_angle,
+                right_knee_angle=right_knee_angle,
+                left_knee_angle=left_knee_angle,
+                right_hip_vel=right_hip_vel,
+                left_hip_vel=left_hip_vel,
+                right_knee_vel=right_knee_vel,
+                left_knee_vel=left_knee_vel,
+                left_knee_location=left_knee_location,
+                right_knee_location=right_knee_location,
+                left_foot_location=left_foot_location,
+                right_foot_location=right_foot_location,
+                left_foot_vel=left_foot_vel,
+                right_foot_vel=right_foot_vel,
+                command=command,
             )
-            negative_speed_command = walking_command & (
-                self.command[:, 4] < -self.cfg.moving_command_threshold
-            )
-            positive_count = positive_speed_command.float().sum().clamp_min(1.0)
-            negative_count = negative_speed_command.float().sum().clamp_min(1.0)
-            self.extras["log"] = {
-                "Reward/velocity_tracking": velocity_tracking_reward.mean(),
-                "Reward/velocity_tracking_positive": positive_velocity_tracking.sum() / positive_count,
-                "Reward/velocity_tracking_negative": negative_velocity_tracking.sum() / negative_count,
-                "Reward/feet_slide_penalty": feet_slide_penalty.mean(),
-                "Reward/feet_clearance": feet_clearance_reward.mean(),
-                "Reward/target_change_penalty": target_change_penalty.mean(),
-                "Reward/alive": alive_reward.mean(),
-                "Reward/termination_penalty": termination_penalty.mean(),
-                "Metrics/speed_error_positive": positive_speed_error.sum() / positive_count,
-                "Metrics/speed_error_negative": negative_speed_error.sum() / negative_count,
-                "Metrics/left_foot_contact_rate": left_foot_contact.float().mean(),
-                "Metrics/right_foot_contact_rate": right_foot_contact.float().mean(),
-            }
         return rewards
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Compute a mean on selected environments without synchronizing the device."""
+        mask_float = mask.to(dtype=values.dtype)
+        return (values * mask_float).sum() / mask_float.sum().clamp_min(1.0)
+
+    def _get_physical_metrics(
+        self,
+        body_vel: torch.Tensor,
+        body_height: torch.Tensor,
+        body_angle: torch.Tensor,
+        right_hip_angle: torch.Tensor,
+        left_hip_angle: torch.Tensor,
+        right_knee_angle: torch.Tensor,
+        left_knee_angle: torch.Tensor,
+        right_hip_vel: torch.Tensor,
+        left_hip_vel: torch.Tensor,
+        right_knee_vel: torch.Tensor,
+        left_knee_vel: torch.Tensor,
+        left_knee_location: torch.Tensor,
+        right_knee_location: torch.Tensor,
+        left_foot_location: torch.Tensor,
+        right_foot_location: torch.Tensor,
+        left_foot_vel: torch.Tensor,
+        right_foot_vel: torch.Tensor,
+        command: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Return physical diagnostics grouped by sitting and walking commands.
+
+        The returned values stay on the environment device. skrl converts them
+        to scalars only when it consumes ``extras['log']``; keeping the
+        calculations here on the device avoids an explicit CPU round-trip.
+        """
+        body_vel = body_vel.squeeze(-1)
+        body_height = body_height.squeeze(-1)
+        body_angle = body_angle.squeeze(-1)
+        right_hip_angle = right_hip_angle.squeeze(-1)
+        left_hip_angle = left_hip_angle.squeeze(-1)
+        right_knee_angle = right_knee_angle.squeeze(-1)
+        left_knee_angle = left_knee_angle.squeeze(-1)
+        right_hip_vel = right_hip_vel.squeeze(-1)
+        left_hip_vel = left_hip_vel.squeeze(-1)
+        right_knee_vel = right_knee_vel.squeeze(-1)
+        left_knee_vel = left_knee_vel.squeeze(-1)
+        rotor_rod_vel = self.joint_vel[:, self.rotor_rod_dof_name_idx].squeeze(-1)
+        rod_body_vel = self.joint_vel[:, self.rod_body_dof_name_idx].squeeze(-1)
+
+        sitting = command[:, 0] == 1
+        walking = ~sitting
+        target_speed = command[:, 1]
+        moving = walking & (target_speed.abs() >= self.cfg.metrics_speed_command_threshold)
+        positive_speed = moving & (target_speed > 0.0)
+        negative_speed = moving & (target_speed < 0.0)
+        speed_error = body_vel - target_speed
+
+        body_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
+        torso_height = body_pose[:, 2]
+        head_height = self._get_top_torso_location()[0][:, 2]
+        left_foot_height = left_foot_location[:, 2]
+        right_foot_height = right_foot_location[:, 2]
+        left_knee_height = left_knee_location[:, 2]
+        right_knee_height = right_knee_location[:, 2]
+        left_foot_speed = torch.linalg.vector_norm(left_foot_vel[:, :2], dim=-1)
+        right_foot_speed = torch.linalg.vector_norm(right_foot_vel[:, :2], dim=-1)
+
+        sit_rotor_target = 5.2 * math.pi / 180.0
+        sit_rod_target = -80.0 * math.pi / 180.0
+        sit_right_knee_target = -124.0 * math.pi / 180.0 * 0.99
+        sit_left_knee_target = 124.0 * math.pi / 180.0 * 0.99
+        sit_rotor_error = body_height - sit_rotor_target
+        sit_rod_error = body_angle - sit_rod_target
+        sit_right_hip_error = right_hip_angle
+        sit_left_hip_error = left_hip_angle
+        sit_right_knee_error = right_knee_angle - sit_right_knee_target
+        sit_left_knee_error = left_knee_angle - sit_left_knee_target
+        sit_joint_angle_error = torch.stack(
+            (
+                sit_rotor_error,
+                sit_rod_error,
+                sit_right_hip_error,
+                sit_left_hip_error,
+                sit_right_knee_error,
+                sit_left_knee_error,
+            ),
+            dim=-1,
+        )
+        sit_joint_velocity = torch.stack(
+            (
+                rotor_rod_vel,
+                rod_body_vel,
+                body_vel,
+                right_hip_vel,
+                left_hip_vel,
+                right_knee_vel,
+                left_knee_vel,
+            ),
+            dim=-1,
+        )
+
+        metrics = {
+            "Physical/command/walking_fraction": walking.float().mean(),
+            "Physical/command/sitting_fraction": sitting.float().mean(),
+            "Physical/command/moving_fraction": moving.float().mean(),
+            "Physical/command/positive_speed_fraction": positive_speed.float().mean(),
+            "Physical/command/negative_speed_fraction": negative_speed.float().mean(),
+            "Physical/termination/terminated_rate": self.reset_terminated.float().mean(),
+            "Physical/termination/timeout_rate": self.reset_time_outs.float().mean(),
+            "Physical/walk/torso_height": self._masked_mean(torso_height, walking),
+            "Physical/walk/head_height": self._masked_mean(head_height, walking),
+            "Physical/walk/left_knee_height": self._masked_mean(left_knee_height, walking),
+            "Physical/walk/right_knee_height": self._masked_mean(right_knee_height, walking),
+            "Physical/walk/left_foot_height": self._masked_mean(left_foot_height, walking),
+            "Physical/walk/right_foot_height": self._masked_mean(right_foot_height, walking),
+            "Physical/walk/mean_foot_height": self._masked_mean(
+                (left_foot_height + right_foot_height) * 0.5, walking
+            ),
+            "Physical/walk/rotor_rod_angle": self._masked_mean(body_height, walking),
+            "Physical/walk/rod_body_angle": self._masked_mean(body_angle, walking),
+            "Physical/walk/rotor_rod_angle_abs": self._masked_mean(body_height.abs(), walking),
+            "Physical/walk/rod_body_angle_abs": self._masked_mean(body_angle.abs(), walking),
+            "Physical/walk/rotor_rod_angular_velocity_abs": self._masked_mean(rotor_rod_vel.abs(), walking),
+            "Physical/walk/rod_body_angular_velocity_abs": self._masked_mean(rod_body_vel.abs(), walking),
+            "Physical/walk/body_velocity": self._masked_mean(body_vel, walking),
+            "Physical/walk/body_velocity_abs": self._masked_mean(body_vel.abs(), walking),
+            "Physical/walk/target_speed": self._masked_mean(target_speed, moving),
+            "Physical/walk/speed_error_signed": self._masked_mean(speed_error, moving),
+            "Physical/walk/speed_error_abs": self._masked_mean(speed_error.abs(), moving),
+            "Physical/walk/speed_error_positive_command_signed": self._masked_mean(
+                speed_error, positive_speed
+            ),
+            "Physical/walk/speed_error_positive_command_abs": self._masked_mean(
+                speed_error.abs(), positive_speed
+            ),
+            "Physical/walk/speed_error_negative_command_signed": self._masked_mean(
+                speed_error, negative_speed
+            ),
+            "Physical/walk/speed_error_negative_command_abs": self._masked_mean(
+                speed_error.abs(), negative_speed
+            ),
+            "Physical/walk/left_foot_horizontal_speed": self._masked_mean(left_foot_speed, walking),
+            "Physical/walk/right_foot_horizontal_speed": self._masked_mean(right_foot_speed, walking),
+            "Physical/walk/mean_foot_horizontal_speed": self._masked_mean(
+                (left_foot_speed + right_foot_speed) * 0.5, walking
+            ),
+            "Physical/walk/left_foot_vertical_velocity": self._masked_mean(left_foot_vel[:, 2], walking),
+            "Physical/walk/right_foot_vertical_velocity": self._masked_mean(right_foot_vel[:, 2], walking),
+            "Physical/sit/torso_height": self._masked_mean(torso_height, sitting),
+            "Physical/sit/head_height": self._masked_mean(head_height, sitting),
+            "Physical/sit/rotor_rod_angle_error_signed": self._masked_mean(sit_rotor_error, sitting),
+            "Physical/sit/rotor_rod_angle_error_abs": self._masked_mean(sit_rotor_error.abs(), sitting),
+            "Physical/sit/rod_body_angle_error_signed": self._masked_mean(sit_rod_error, sitting),
+            "Physical/sit/rod_body_angle_error_abs": self._masked_mean(sit_rod_error.abs(), sitting),
+            "Physical/sit/right_hip_angle_error_abs": self._masked_mean(sit_right_hip_error.abs(), sitting),
+            "Physical/sit/left_hip_angle_error_abs": self._masked_mean(sit_left_hip_error.abs(), sitting),
+            "Physical/sit/right_knee_angle_error_abs": self._masked_mean(sit_right_knee_error.abs(), sitting),
+            "Physical/sit/left_knee_angle_error_abs": self._masked_mean(sit_left_knee_error.abs(), sitting),
+            "Physical/sit/mean_joint_angle_error_abs": self._masked_mean(
+                sit_joint_angle_error.abs().mean(dim=-1), sitting
+            ),
+            "Physical/sit/rotor_rod_angular_velocity_abs": self._masked_mean(rotor_rod_vel.abs(), sitting),
+            "Physical/sit/rod_body_angular_velocity_abs": self._masked_mean(rod_body_vel.abs(), sitting),
+            "Physical/sit/body_velocity_abs": self._masked_mean(body_vel.abs(), sitting),
+            "Physical/sit/mean_joint_velocity_abs": self._masked_mean(
+                sit_joint_velocity.abs().mean(dim=-1), sitting
+            ),
+        }
+        return metrics
 
     def _get_dones(self):
         # Isaac Lab 3.0 exposes simulation buffers through explicit torch views.
@@ -553,31 +654,44 @@ class CbriisaaclabEnv(DirectRLEnv):
         joint_vel = self.robot.data.default_joint_vel.torch[env_ids].clone()
 
         # Set initial command to sitting for all resetting envs
-        self.command[env_ids, :] = self._sit_reset_command
+        self.command[env_ids, :] = get_command(device=self.device, sit_time=self.cfg.command_info_cfg['sit_min'] // 2)
 
         # -- Standing initial state for 70% of environments
         # Determine which envs will be standing
         stand_mask = torch.rand(num_resets, device=self.device) < 0.7
-        self.command[env_ids, 0] = (~stand_mask).float()
+        stand_indices = env_ids[stand_mask]
+        num_standing = len(stand_indices)
 
-        # Split standing environments into two poses without tensor-to-Python
-        # conditions. Empty boolean selections are valid and need no special case.
-        pose_a_mask = stand_mask & (torch.rand(num_resets, device=self.device) < 0.5)
-        pose_b_mask = stand_mask & ~pose_a_mask
+        if num_standing > 0:
+            # Set standing command
+            self.command[stand_indices, :] = get_command(sit=0,device=self.device)
+            
+            standing_joint_pos = joint_pos[stand_mask]
 
-        joint_pos[pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_a['rotor_rod']
-        joint_pos[pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_a['rod_body']
-        joint_pos[pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_right_hip']
-        joint_pos[pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_left_hip']
-        joint_pos[pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['right_hip_shin']
-        joint_pos[pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['left_hip_shin']
+            # -- Split standing envs into two groups for different poses
+            pose_a_mask = torch.rand(num_standing, device=self.device) < 0.5
+            num_pose_a = pose_a_mask.sum()
+            num_pose_b = num_standing - num_pose_a
 
-        joint_pos[pose_b_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_b['rotor_rod']
-        joint_pos[pose_b_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_b['rod_body']
-        joint_pos[pose_b_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_right_hip']
-        joint_pos[pose_b_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_left_hip']
-        joint_pos[pose_b_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['right_hip_shin']
-        joint_pos[pose_b_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['left_hip_shin']
+            # Set standing joint positions for group A
+            if num_pose_a > 0:
+                standing_joint_pos[pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_a['rotor_rod']
+                standing_joint_pos[pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_a['rod_body']
+                standing_joint_pos[pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_right_hip']
+                standing_joint_pos[pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_left_hip']
+                standing_joint_pos[pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['right_hip_shin']
+                standing_joint_pos[pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['left_hip_shin']
+
+            # Set standing joint positions for group B
+            if num_pose_b > 0:
+                standing_joint_pos[~pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_b['rotor_rod']
+                standing_joint_pos[~pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_b['rod_body']
+                standing_joint_pos[~pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_right_hip']
+                standing_joint_pos[~pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_left_hip']
+                standing_joint_pos[~pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['right_hip_shin']
+                standing_joint_pos[~pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['left_hip_shin']
+
+            joint_pos[stand_mask] = standing_joint_pos
 
         # Apply initial tilt variation to all resetting envs
         joint_pos[:, self.rod_body_dof_name_idx] += sample_uniform(
@@ -601,158 +715,149 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
         self.actions[env_ids] = 0.0
-        self.target_delta[env_ids] = 0.0
 
+    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        # Scale actions (deltas)
+        actions = actions.clamp(-1, 1)
+        actions[:,0] *= self.cfg.action_hip_scale
+        actions[:,1] *= self.cfg.action_hip_scale
+        actions[:,2] *= self.cfg.action_knee_scale
+        actions[:,3] *= self.cfg.action_knee_scale
+        return actions
+    
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
-    height_joint_angle: torch.Tensor,
+    body_height: torch.Tensor,
     body_angle: torch.Tensor,
-    actuated_joint_velocities: torch.Tensor,
-    sitting_joint_positions: torch.Tensor,
-    sitting_target: torch.Tensor,
+    right_hip_angle: torch.Tensor,
+    left_hip_angle: torch.Tensor,
+    right_knee_angle: torch.Tensor,
+    left_knee_angle: torch.Tensor,
+    right_hip_vel: torch.Tensor,
+    left_hip_vel: torch.Tensor,
+    right_knee_vel: torch.Tensor,
+    left_knee_vel: torch.Tensor,
     left_knee_location: torch.Tensor,
     right_knee_location: torch.Tensor,
     left_foot_location: torch.Tensor,
     right_foot_location: torch.Tensor,
     left_foot_vel: torch.Tensor,
     right_foot_vel: torch.Tensor,
-    left_foot_contact: torch.Tensor,
-    right_foot_contact: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
-    target_delta: torch.Tensor,
-    velocity_tracking_reward_scale: float,
-    velocity_tracking_error_std: float,
-    walking_height_joint_target: float,
-    walking_height_joint_penalty_scale: float,
-    walking_body_angle_target: float,
-    walking_body_angle_penalty_scale: float,
-    walking_joint_velocity_penalty_scale: float,
-    low_knee_height_threshold: float,
-    low_knee_penalty_scale: float,
-    sitting_joint_position_penalty_scale: float,
-    sitting_velocity_penalty_scale: float,
-    sitting_reward_scale: float,
-    alive_reward_scale: float,
-    termination_penalty_scale: float,
-    target_change_penalty_scale: float,
-    feet_slide_penalty_scale: float,
-    feet_clearance_reward_scale: float,
-    feet_clearance_height_scale: float,
-    feet_clearance_speed_scale: float,
-    moving_command_threshold: float,
+    actions: torch.Tensor,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
     is_sitting_command = command[:, 0] == 1
-    is_walking_command = ~is_sitting_command
 
-    # Common rewards and penalties.
-    termination_penalty = reset_terminated.float() * -termination_penalty_scale
-    alive_reward = (1.0 - reset_terminated.float()) * alive_reward_scale
+    # Common rewards/penalties for all envs
+    termination_penalty = reset_terminated.float() * -10
+    alive_reward = (1.0 - reset_terminated.float()) * 0.05
 
     # --- Rewards for walking ---
-    # Positive bounded reward for matching the commanded speed. This gives a
-    # clear maximum at exact tracking instead of making every walking step
-    # negative and accumulating error over a long successful episode.
-    speed_error = body_vel.squeeze(-1) - command[:, 1]
-    velocity_tracking_reward = (
-        is_walking_command.float()
-        * velocity_tracking_reward_scale
-        * torch.exp(
-            -(speed_error * speed_error)
-            / (velocity_tracking_error_std * velocity_tracking_error_std)
-        )
-    )
-    positive_speed_command = is_walking_command & (command[:, 1] > moving_command_threshold)
-    negative_speed_command = is_walking_command & (command[:, 1] < -moving_command_threshold)
-    positive_velocity_tracking = positive_speed_command.float() * velocity_tracking_reward
-    negative_velocity_tracking = negative_speed_command.float() * velocity_tracking_reward
-    positive_speed_error = positive_speed_command.float() * torch.abs(speed_error)
-    negative_speed_error = negative_speed_command.float() * torch.abs(speed_error)
-    walk_reward = velocity_tracking_reward.clone()
+    # Penalize deviation from target speed and encourage standing height
+    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
+    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.00001
+    walk_reward += body_height.squeeze(-1) * -0.5
+    walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
 
-    joint_velocity_penalty = torch.sum(torch.abs(actuated_joint_velocities), dim=-1)
-    walk_reward -= walking_joint_velocity_penalty_scale * joint_velocity_penalty
-    walk_reward -= walking_height_joint_penalty_scale * torch.abs(
-        height_joint_angle.squeeze(-1) - walking_height_joint_target
-    )
-    walk_reward -= walking_body_angle_penalty_scale * torch.abs(
-        body_angle.squeeze(-1) - walking_body_angle_target
-    )
+    # moving_command = command[:, 1].abs() > 0.15
+    walk_reward += (~is_sitting_command & (left_knee_location[:, 2] < 0.1)).float() * -0.05
+    walk_reward += (~is_sitting_command & (right_knee_location[:, 2] < 0.1)).float() * -0.05
 
-    moving_command = is_walking_command & (command[:, 1].abs() > moving_command_threshold)
-    walk_reward -= (
-        moving_command & (left_knee_location[:, 2] < low_knee_height_threshold)
-    ).float() * low_knee_penalty_scale
-    walk_reward -= (
-        moving_command & (right_knee_location[:, 2] < low_knee_height_threshold)
-    ).float() * low_knee_penalty_scale
+    # Penalty for feet dragging
+    feet_drag_penalty = torch.exp(-left_foot_location[:, 2] * 15.0) * torch.norm(left_foot_vel[:, :2], dim=-1)
+    feet_drag_penalty += torch.exp(-right_foot_location[:, 2] * 15.0) * torch.norm(right_foot_vel[:, :2], dim=-1)
+    walk_reward += feet_drag_penalty * -0.03
 
-    # Penalize horizontal motion only while a foot is physically in contact.
-    left_foot_speed = torch.norm(left_foot_vel[:, :2], dim=-1)
-    right_foot_speed = torch.norm(right_foot_vel[:, :2], dim=-1)
-    feet_slide_penalty = (
-        left_foot_contact.float() * left_foot_speed
-        + right_foot_contact.float() * right_foot_speed
-    )
-    walk_reward -= feet_slide_penalty_scale * feet_slide_penalty
+    # Penalty for both feet on the ground when commanded to move
+    # left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
+    # right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
+    # walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
 
-    # Reward upward motion of the swing foot above the stance foot.
-    single_support = torch.logical_xor(left_foot_contact, right_foot_contact)
-    swing_foot_height = torch.where(
-        left_foot_contact,
-        right_foot_location[:, 2] - left_foot_location[:, 2],
-        left_foot_location[:, 2] - right_foot_location[:, 2],
-    )
-    swing_foot_up_velocity = torch.where(
-        left_foot_contact,
-        right_foot_vel[:, 2],
-        left_foot_vel[:, 2],
-    ).clamp(min=0.0)
-    clearance_score = torch.tanh(
-        swing_foot_height.clamp(min=0.0) / feet_clearance_height_scale
-    )
-    lift_motion = torch.tanh(feet_clearance_speed_scale * swing_foot_up_velocity)
-    feet_clearance_reward = (
-        moving_command.float() * single_support.float() * clearance_score * lift_motion
-    )
-    walk_reward += feet_clearance_reward_scale * feet_clearance_reward
 
     # --- Rewards for sitting ---
-    sitting_position_error = torch.sum(
-        torch.abs(sitting_joint_positions - sitting_target.unsqueeze(0)), dim=-1
-    )
-    sit_reward = -sitting_joint_position_penalty_scale * sitting_position_error
-    sit_reward -= sitting_velocity_penalty_scale * body_vel.abs().squeeze(-1)
+    # Penalize any velocity to encourage being still.
+    # You could also add a reward for being at a low height.
+    sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
+    sit_reward += body_vel.abs().squeeze(-1) * -0.1
+    sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
+    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
+    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
 
-    # Penalize target changes, not the absolute desired target.
-    target_change_penalty = (
-        torch.sum(target_delta ** 2, dim=-1) * -target_change_penalty_scale
-    )
+    # Penalty for action magnitude (energy/effort)
+    action_penalty = torch.sum(actions ** 2, dim=-1) * -0.00001
 
-    # Select the appropriate reward based on the command.
-    total_reward = torch.where(
-        is_sitting_command,
-        sit_reward * sitting_reward_scale,
-        walk_reward,
-    )
+    # Select the appropriate reward based on the command
+    total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
 
-    total_reward += alive_reward + termination_penalty + target_change_penalty
-    return (
-        total_reward,
-        velocity_tracking_reward,
-        feet_slide_penalty,
-        feet_clearance_reward,
-        target_change_penalty,
-        alive_reward,
-        termination_penalty,
-        positive_velocity_tracking,
-        negative_velocity_tracking,
-        positive_speed_error,
-        negative_speed_error,
-    )
+    # Add common rewards
+    total_reward += alive_reward + termination_penalty + action_penalty
+    return total_reward
+
+# @torch.jit.script
+# def compute_rewards(
+#     body_vel: torch.Tensor,
+#     body_height: torch.Tensor,
+#     body_angle: torch.Tensor,
+#     right_hip_angle: torch.Tensor,
+#     left_hip_angle: torch.Tensor,
+#     right_knee_angle: torch.Tensor,
+#     left_knee_angle: torch.Tensor,
+#     left_knee_location: torch.Tensor,
+#     right_knee_location: torch.Tensor,
+#     left_foot_location: torch.Tensor,
+#     right_foot_location: torch.Tensor,
+#     reset_terminated: torch.Tensor,
+#     command: torch.Tensor,
+# ):
+#     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
+#     # command[:, 1] is the target speed
+#     is_sitting_command = command[:, 0] == 1
+
+#     # Common rewards/penalties for all envs
+#     termination_penalty = reset_terminated.float() * -25.0
+#     alive_reward = (1.0 - reset_terminated.float()) * 0.1
+
+#     # --- Rewards for walking ---
+#     # Penalize deviation from target speed and encourage standing height
+#     walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
+#     walk_reward += body_height.sum(dim=-1) * -0.35
+#     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
+
+#     moving_command = command[:, 1].abs() > 0.15
+#     walk_reward += (moving_command & (left_knee_location[:, 2] < 0.1)).float() * -0.1
+#     walk_reward += (moving_command & (right_knee_location[:, 2] < 0.1)).float() * -0.1
+
+#     # Penalty for both feet on the ground when commanded to move
+#     left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
+#     right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
+#     walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
+
+
+#     # --- Rewards for sitting ---
+#     # Penalize any velocity to encourage being still.
+#     # You could also add a reward for being at a low height.
+#     sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
+#     sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+#     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
+
+#     # Select the appropriate reward based on the command
+#     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
+
+#     # Add common rewards
+#     total_reward += alive_reward + termination_penalty
+#     return total_reward
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

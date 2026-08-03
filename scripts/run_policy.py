@@ -69,10 +69,7 @@ class SkrlDummyEnv:
         self.num_envs = num_envs
         self.device = device
         self.observation_space = gym.spaces.Box(low=-float('inf'), high=float('inf'), shape=(obs_space,), dtype=np.float32)
-        if isinstance(act_space, gym.Space):
-            self.action_space = act_space
-        else:
-            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_space,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_space,), dtype=np.float32)
         self.state_space = None
 
 def define_markers() -> VisualizationMarkers:
@@ -176,7 +173,6 @@ class CBRIPolicyRunner:
         self.command = torch.zeros((self.num_envs, 5), device=self.device)
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
         self.targets = torch.zeros((self.num_envs, 4), device=self.device)
-        self.target_delta = torch.zeros((self.num_envs, 4), device=self.device)
 
         # Markers
         self.visualization_markers = define_markers()
@@ -341,14 +337,21 @@ class CBRIPolicyRunner:
             self.targets,
         ], dim=-1).float()
 
+    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        # Scale actions (deltas)
+        actions = actions.clamp(-1, 1)
+        actions[:, 0] *= self.cfg.action_hip_scale
+        actions[:, 1] *= self.cfg.action_hip_scale
+        actions[:, 2] *= self.cfg.action_knee_scale
+        actions[:, 3] *= self.cfg.action_knee_scale
+        return actions
+
     def apply_actions(self, actions):
-        actions = actions.clone().clamp(-1.0, 1.0)
+        self.actions = actions.clone()
+        scaled_actions = self._scale_actions(actions)
+        self.targets += scaled_actions
         limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
-        desired_targets = limits[..., 0] + 0.5 * (actions + 1.0) * (limits[..., 1] - limits[..., 0])
-        self.target_delta.copy_(desired_targets)
-        self.target_delta.sub_(self.targets)
-        self.targets.copy_(desired_targets)
-        self.actions = actions
+        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
         self.robot.set_joint_position_target_index(target=self.targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
