@@ -116,7 +116,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     termination_head_height = 0.1
 
     # observation noise
-    add_noise = True
+    add_noise = False
     noise_pos_hip_knee = 0.05
     noise_vel_hip_knee = 0.05
     noise_height_pos = 0.01
