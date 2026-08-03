@@ -52,6 +52,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.right_hip_shin_dof_name_idx[0],
             self.left_hip_shin_dof_name_idx[0]
         ]
+        self._actuated_dof_indices_tensor = torch.tensor(self.actuated_dof_indices, device=self.device)
+        self._histogram_joint_names = ("right_hip", "left_hip", "right_knee", "left_knee")
 
         # Pre-compute indices for observations to avoid fragile slicing
         self.obs_joint_pos_indices = torch.tensor(
@@ -60,6 +62,19 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         self.joint_pos = self.robot.data.joint_pos.torch
         self.joint_vel = self.robot.data.joint_vel.torch
+
+        self._histogram_writer = None
+        if getattr(self.cfg, "log_dir", None):
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+
+                self._histogram_writer = SummaryWriter(
+                    log_dir=self.cfg.log_dir,
+                    max_queue=100,
+                    flush_secs=30,
+                )
+            except ImportError:
+                print("[WARN] TensorBoard is unavailable; action histograms will not be written.")
 
         # Initialize command handling
         self.command = torch.zeros((self.cfg.scene.num_envs,5), device=self.device)
@@ -461,7 +476,47 @@ class CbriisaaclabEnv(DirectRLEnv):
                 right_foot_vel=right_foot_vel,
                 command=command,
             )
+        if self.common_step_counter % self.cfg.histogram_log_interval == 0:
+            self._log_action_histograms()
         return rewards
+
+    def _log_action_histograms(self):
+        """Write action and target distributions to the run's TensorBoard log."""
+        if self._histogram_writer is None:
+            return
+
+        with torch.no_grad():
+            raw_actions = self.actions
+            clipped_actions = raw_actions.clamp(-1.0, 1.0)
+            scaled_action_delta = self._scale_actions(raw_actions)
+            unnoisy_joint_state = self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
+            target_error = self.targets - unnoisy_joint_state
+
+            distributions = {
+                "action/raw": raw_actions,
+                "action/clipped": clipped_actions,
+                "action/scaled_delta": scaled_action_delta,
+                "target/absolute": self.targets,
+                "target/error_to_unnoisy_joint": target_error,
+                "state/unnoisy_joint": unnoisy_joint_state,
+            }
+            for name, values in distributions.items():
+                for joint_index, joint_name in enumerate(self._histogram_joint_names):
+                    self._histogram_writer.add_histogram(
+                        f"PhysicalHistogram/{name}/{joint_name}",
+                        values[:, joint_index],
+                        global_step=self.common_step_counter,
+                    )
+
+    def close(self):
+        """Close TensorBoard writers and the simulator."""
+        try:
+            super().close()
+        finally:
+            if self._histogram_writer is not None:
+                self._histogram_writer.flush()
+                self._histogram_writer.close()
+                self._histogram_writer = None
 
     @staticmethod
     def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

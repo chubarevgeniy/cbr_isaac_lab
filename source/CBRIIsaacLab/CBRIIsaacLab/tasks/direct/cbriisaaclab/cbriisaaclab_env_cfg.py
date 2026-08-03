@@ -129,6 +129,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # Metrics are emitted sparsely because skrl converts logged CUDA scalars to
     # Python values, which synchronizes the CUDA stream.
     metrics_log_interval = 100
+    histogram_log_interval = 1000
     metrics_speed_command_threshold = 0.05
 
     #commands settings

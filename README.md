@@ -156,3 +156,6 @@ Some examples of packages that can likely be excluded are:
 "<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
 ...
 ```
+
+
+Подробный план системного сравнения обучения: [TRAINING_PLAN.md](TRAINING_PLAN.md).
