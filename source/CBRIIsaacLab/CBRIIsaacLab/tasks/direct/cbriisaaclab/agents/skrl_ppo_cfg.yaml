@@ -73,7 +73,7 @@ agent:
     experiment_name: ""
     write_interval: auto
     store_separately: False
-    checkpoint_interval: 8000
+    checkpoint_interval: 5000
 
 
 # Sequential trainer
