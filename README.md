@@ -156,9 +156,12 @@ The initial factors are:
 | B | `initial_tilt_angle_variation=0.0` |
 | C | `agent.mini_batches=4` |
 
-Run `A`, `B`, and `C` independently, followed by selected combinations such as `A+B`, `A+C`,
-`B+C`, and `A+B+C`. Each branch must change only the listed values relative to the common base;
-the report should distinguish the individual effect from the interaction effect.
+For a fast triage pass, run the combined gate `A+B+C` first. If its full training trajectory,
+physical metrics, and checkpoint video do not show a meaningful difference from baseline, the
+three candidates can be deprioritized together. If the gate changes behavior, run `A`, `B`, and
+`C` independently, followed by selected combinations such as `A+B`, `A+C`, and `B+C` to attribute
+the effect. Each branch must change only the listed values relative to the common base; the report
+should distinguish the individual effect from the interaction effect.
 
 ### Parallel runs and GPU memory
 
