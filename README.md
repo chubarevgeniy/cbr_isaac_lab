@@ -145,6 +145,17 @@ the environment and PPO configuration, git provenance, checkpoints, TensorBoard 
 and the full training trajectory under `logs/skrl/cbr_i_ppo/`. Compare all recorded steps,
 not just the tail of a run.
 
+When running from a separate git worktree, make the source checkout explicit because the
+editable `CBRIIsaacLab` install may otherwise point at another worktree:
+
+```bash
+PYTHONPATH=/absolute/path/to/worktree/source/CBRIIsaacLab \
+VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/train.py ...
+```
+
+Before accepting a run, verify `params/env.yaml`, `params/agent.yaml`, and `params/git.yaml`
+against the intended branch. A matching branch name alone is not sufficient provenance.
+
 ### Single-factor and cross-factor experiments
 
 Keep one-factor branches for attribution, then add cross-factor branches to measure interactions.
