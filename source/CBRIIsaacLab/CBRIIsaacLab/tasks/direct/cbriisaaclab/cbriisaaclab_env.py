@@ -85,7 +85,26 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.previous_actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.action_target_delta = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+
+        reward_profiles = {
+            "baseline": 0,
+            "survival_clearance_speed": 1,
+            "smooth_clearance": 2,
+            "task_balanced": 3,
+        }
+        if self.cfg.reward_profile not in reward_profiles:
+            raise ValueError(
+                f"Unknown reward_profile={self.cfg.reward_profile!r}; "
+                f"expected one of {tuple(reward_profiles)}"
+            )
+        if self.cfg.action_mode not in ("delta", "absolute"):
+            raise ValueError(
+                f"Unknown action_mode={self.cfg.action_mode!r}; expected 'delta' or 'absolute'"
+            )
+        self.reward_profile_id = reward_profiles[self.cfg.reward_profile]
 
     def _setup_scene(self):
         # Initialize the robot
@@ -143,11 +162,34 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
+        self.previous_actions.copy_(self.actions)
         self.actions = actions.clone()
-        scaled_actions = self._scale_actions(actions)
-        self.targets += scaled_actions
         limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
-        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
+        lower_limits = limits[..., 0]
+        upper_limits = limits[..., 1]
+
+        if self.cfg.action_mode == "absolute":
+            # The policy predicts a normalized absolute target. The desired
+            # target is restricted to soft limits and then rate-limited before
+            # reaching the articulation.
+            normalized_actions = actions.clamp(-1.0, 1.0)
+            desired_targets = lower_limits + (normalized_actions + 1.0) * 0.5 * (
+                upper_limits - lower_limits
+            )
+            target_delta = desired_targets - self.targets
+            target_delta = target_delta.clamp(
+                min=-self.cfg.absolute_target_step_limit,
+                max=self.cfg.absolute_target_step_limit,
+            )
+        else:
+            target_delta = self._scale_delta_actions(actions)
+
+        self.action_target_delta = target_delta
+        self.targets = torch.clamp(
+            self.targets + target_delta,
+            min=lower_limits,
+            max=upper_limits,
+        )
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -452,6 +494,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             reset_terminated=self.reset_terminated,
             command=command,
             actions=self.actions,
+            action_delta=self.actions - self.previous_actions,
+            reward_profile=self.reward_profile_id,
         )
 
         self.extras.pop("log", None)
@@ -496,6 +540,8 @@ class CbriisaaclabEnv(DirectRLEnv):
                 "action/raw": raw_actions,
                 "action/clipped": clipped_actions,
                 "action/scaled_delta": scaled_action_delta,
+                "action/effective_target_delta": self.action_target_delta,
+                "action/rate": self.actions - self.previous_actions,
                 "target/absolute": self.targets,
                 "target/error_to_unnoisy_joint": target_error,
                 "state/unnoisy_joint": unnoisy_joint_state,
@@ -616,6 +662,7 @@ class CbriisaaclabEnv(DirectRLEnv):
             ),
             dim=-1,
         )
+        action_rate = self.actions - self.previous_actions
 
         metrics = {
             "Physical/command/walking_fraction": walking.float().mean(),
@@ -625,6 +672,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             "Physical/command/negative_speed_fraction": negative_speed.float().mean(),
             "Physical/termination/terminated_rate": self.reset_terminated.float().mean(),
             "Physical/termination/timeout_rate": self.reset_time_outs.float().mean(),
+            "Physical/action/mean_abs": self.actions.abs().mean(),
+            "Physical/action/mean_abs_rate": action_rate.abs().mean(),
+            "Physical/action/saturation_fraction": (self.actions.abs() >= 0.99).float().mean(),
+            "Physical/target/mean_abs_step": self.action_target_delta.abs().mean(),
             "Physical/walk/torso_height": self._masked_mean(torso_height, walking),
             "Physical/walk/head_height": self._masked_mean(head_height, walking),
             "Physical/walk/left_knee_height": self._masked_mean(left_knee_height, walking),
@@ -770,8 +821,10 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
         self.actions[env_ids] = 0.0
+        self.previous_actions[env_ids] = 0.0
+        self.action_target_delta[env_ids] = 0.0
 
-    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+    def _scale_delta_actions(self, actions: torch.Tensor) -> torch.Tensor:
         # Scale actions (deltas)
         actions = actions.clamp(-1, 1)
         actions[:,0] *= self.cfg.action_hip_scale
@@ -779,6 +832,16 @@ class CbriisaaclabEnv(DirectRLEnv):
         actions[:,2] *= self.cfg.action_knee_scale
         actions[:,3] *= self.cfg.action_knee_scale
         return actions
+
+    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Return the action representation used by the diagnostic histograms."""
+        if self.cfg.action_mode == "absolute":
+            limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
+            normalized_actions = actions.clamp(-1.0, 1.0)
+            return limits[..., 0] + (normalized_actions + 1.0) * 0.5 * (
+                limits[..., 1] - limits[..., 0]
+            )
+        return self._scale_delta_actions(actions)
     
 @torch.jit.script
 def compute_rewards(
@@ -802,18 +865,51 @@ def compute_rewards(
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
+    action_delta: torch.Tensor,
+    reward_profile: int,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
     is_sitting_command = command[:, 0] == 1
 
     # Common rewards/penalties for all envs
-    termination_penalty = reset_terminated.float() * -10
-    alive_reward = (1.0 - reset_terminated.float()) * 0.05
+    termination_scale = 10.0
+    alive_scale = 0.05
+    speed_scale = 0.15
+    clearance_scale = 0.0
+    action_rate_scale = 0.0
+    sit_scale = 0.5
+    clearance_target = 0.07
+    clearance_sigma = 0.04
+
+    if reward_profile == 1:
+        termination_scale = 20.0
+        alive_scale = 0.10
+        speed_scale = 0.25
+        clearance_scale = 0.10
+        sit_scale = 0.65
+    elif reward_profile == 2:
+        termination_scale = 15.0
+        alive_scale = 0.08
+        speed_scale = 0.20
+        clearance_scale = 0.12
+        action_rate_scale = 0.003
+        sit_scale = 0.65
+        clearance_target = 0.08
+    elif reward_profile == 3:
+        termination_scale = 18.0
+        alive_scale = 0.09
+        speed_scale = 0.22
+        clearance_scale = 0.10
+        action_rate_scale = 0.0015
+        sit_scale = 0.85
+
+    termination_penalty = reset_terminated.float() * -termination_scale
+    alive_reward = (1.0 - reset_terminated.float()) * alive_scale
 
     # --- Rewards for walking ---
     # Penalize deviation from target speed and encourage standing height
-    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
+    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -speed_scale
     walk_reward += right_hip_vel.abs().squeeze(-1) * -0.00001
     walk_reward += left_hip_vel.abs().squeeze(-1) * -0.00001
     walk_reward += right_knee_vel.abs().squeeze(-1) * -0.00001
@@ -829,6 +925,18 @@ def compute_rewards(
     feet_drag_penalty = torch.exp(-left_foot_location[:, 2] * 15.0) * torch.norm(left_foot_vel[:, :2], dim=-1)
     feet_drag_penalty += torch.exp(-right_foot_location[:, 2] * 15.0) * torch.norm(right_foot_vel[:, :2], dim=-1)
     walk_reward += feet_drag_penalty * -0.03
+
+    # Reward useful clearance only while a non-zero walking command is active.
+    # The bounded Gaussian target avoids rewarding arbitrarily high legs and
+    # stays meaningful for the current flat-ground task.
+    moving_command = (~is_sitting_command) & (command[:, 1].abs() > 0.05)
+    clearance_reward = torch.exp(
+        -((left_foot_location[:, 2] - clearance_target) / clearance_sigma) ** 2
+    )
+    clearance_reward += torch.exp(
+        -((right_foot_location[:, 2] - clearance_target) / clearance_sigma) ** 2
+    )
+    walk_reward += moving_command.float() * clearance_reward * clearance_scale
 
     # Penalty for both feet on the ground when commanded to move
     # left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
@@ -851,10 +959,11 @@ def compute_rewards(
     action_penalty = torch.sum(actions ** 2, dim=-1) * -0.00001
 
     # Select the appropriate reward based on the command
-    total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
+    total_reward = torch.where(is_sitting_command, sit_reward * sit_scale, walk_reward)
 
     # Add common rewards
-    total_reward += alive_reward + termination_penalty + action_penalty
+    action_rate_penalty = torch.sum(action_delta ** 2, dim=-1) * -action_rate_scale
+    total_reward += alive_reward + termination_penalty + action_penalty + action_rate_penalty
     return total_reward
 
 # @torch.jit.script

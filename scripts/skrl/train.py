@@ -31,6 +31,43 @@ parser.add_argument(
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--action_mode",
+    type=str,
+    default=None,
+    choices=["delta", "absolute"],
+    help="Action semantics: bounded delta targets or bounded absolute joint targets.",
+)
+parser.add_argument(
+    "--reward_profile",
+    type=str,
+    default=None,
+    choices=["baseline", "survival_clearance_speed", "smooth_clearance", "task_balanced"],
+    help="Named reward bundle used for an experiment.",
+)
+parser.add_argument(
+    "--policy_clip_actions",
+    action="store_true",
+    help="Clip sampled policy actions to the bounded [-1, 1] action space.",
+)
+parser.add_argument(
+    "--policy_initial_log_std",
+    type=float,
+    default=None,
+    help="Optional initial Gaussian log standard deviation for bounded-policy runs.",
+)
+parser.add_argument(
+    "--policy_max_log_std",
+    type=float,
+    default=None,
+    help="Optional upper bound for Gaussian log standard deviation.",
+)
+parser.add_argument(
+    "--experiment_label",
+    type=str,
+    default=None,
+    help="Optional human-readable suffix stored in the run directory name.",
+)
+parser.add_argument(
     "--ml_framework",
     type=str,
     default="torch",
@@ -63,6 +100,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import numpy as np
 import os
 import random
 import re
@@ -160,6 +198,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    # Apply experiment controls before the run configuration is dumped. This
+    # keeps every run self-describing and avoids relying on an editable install
+    # that may point to a different git worktree.
+    if args_cli.action_mode is not None:
+        env_cfg.action_mode = args_cli.action_mode
+    if args_cli.reward_profile is not None:
+        env_cfg.reward_profile = args_cli.reward_profile
+    if args_cli.policy_clip_actions:
+        agent_cfg["models"]["policy"]["clip_actions"] = True
+        agent_cfg["models"]["policy"]["clip_mean_actions"] = True
+        # The integer action-space shorthand is unbounded to skrl. Expose the
+        # normalized domain when policy-side clipping is requested.
+        env_cfg.action_space = gym.spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(4,),
+            dtype=np.float32,
+        )
+    if args_cli.policy_initial_log_std is not None:
+        agent_cfg["models"]["policy"]["initial_log_std"] = args_cli.policy_initial_log_std
+    if args_cli.policy_max_log_std is not None:
+        agent_cfg["models"]["policy"]["max_log_std"] = args_cli.policy_max_log_std
+
     # multi-gpu training config
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
@@ -203,6 +264,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"Exact experiment name requested from command line: {log_dir}")
     if agent_cfg["agent"]["experiment"]["experiment_name"]:
         log_dir += f'_{agent_cfg["agent"]["experiment"]["experiment_name"]}'
+    if args_cli.experiment_label:
+        log_dir += f"_{sanitize_run_component(args_cli.experiment_label)}"
     # set directory into agent config
     agent_cfg["agent"]["experiment"]["directory"] = log_root_path
     agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
@@ -212,6 +275,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    dump_yaml(
+        os.path.join(log_dir, "params", "launch.yaml"),
+        {"argparse": vars(args_cli), "hydra_args": hydra_args},
+    )
     git_metadata["run_name"] = log_dir
     dump_yaml(os.path.join(log_dir, "params", "git.yaml"), git_metadata)
 

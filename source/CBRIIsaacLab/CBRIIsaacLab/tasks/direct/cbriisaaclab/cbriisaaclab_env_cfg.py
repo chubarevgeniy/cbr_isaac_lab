@@ -109,8 +109,16 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # - action scale
     action_hip_scale = 0.1  # rad per step
     action_knee_scale = 0.1  # rad per step
+    # Action semantics are explicit so delta and absolute-target policies can
+    # be compared without duplicating the environment.
+    action_mode = "delta"  # "delta" or "absolute"
+    # Safety limiter for an absolute-target policy. The requested target is
+    # still restricted to the soft joint limits before it reaches the robot.
+    absolute_target_step_limit = 0.08  # rad per policy step
     # - reward scales
     rew_scale_alive = 1.0
+    # "baseline" preserves the reward used by the 32k-step screening runs.
+    reward_profile = "baseline"
     # - reset states/conditions
     termination_rod_angle = 8.9 * math.pi / 180.0
     termination_head_height = 0.1

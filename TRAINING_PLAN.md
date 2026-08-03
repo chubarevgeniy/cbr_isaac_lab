@@ -1,17 +1,18 @@
 ## План системного сравнения обучения
 
-Цель экспериментов — понять, какие изменения улучшают именно физическое поведение робота, а какие только поднимают численную награду. Каждый пункт ниже нужно запускать как отдельный эксперимент и фиксировать результат в отчёте. Не следует менять несколько независимых факторов одновременно.
+Цель экспериментов — понять, какие изменения улучшают именно физическое поведение робота, а какие только поднимают численную награду. Каждый пункт ниже нужно запускать как отдельный эксперимент и фиксировать результат в отчёте.
 
 ### Правила эксперимента
 
 1. Сначала создать baseline на текущем `master`.
 2. Зафиксировать seed, число окружений, число timesteps, конфигурацию PPO и reward.
-3. В каждом следующем запуске менять только один фактор.
+3. Для короткой причинной проверки менять один фактор. Для длинных ночных запусков разрешены ветки-гипотезы с несколькими связанными правками, если они направлены на одну физическую цель (например, `bounded policy + нормированный action-space + ограничение std` для проверки action representation). Независимые изменения нельзя молча смешивать: в названии ветки, `launch.yaml` и отчёте перечислять каждый компонент и объяснять ожидаемое взаимодействие.
 4. Для быстрых проверок использовать один seed, для подтверждения результата — минимум три seed.
 5. Сравнивать весь процесс обучения от первого до последнего записанного шага и одинаковое число обучающих timesteps. Для каждого показателя сохранять динамику, агрегаты по всей траектории и отдельно значение на последнем шаге.
 6. Награду использовать как вторичный показатель. Главные показатели — физические метрики из `Physical/...`.
 7. После каждого запуска сохранять checkpoint, ссылку на run-директорию и короткий вывод: что изменилось, почему, результат и решение.
 8. При запуске из git worktree явно задавать `PYTHONPATH` на `worktree/source/CBRIIsaacLab` и до сравнения проверять `params/env.yaml` и `params/agent.yaml`; `branch` в `params/git.yaml` сам по себе не доказывает, что был импортирован нужный checkout.
+9. Ветка может содержать несколько правок в одном коммите или серии коммитов. Для ночной серии предпочтительны 6–8 осмысленных hypothesis bundles вместо полного грида: один длинный контроль, два action representations, два reward bundles и несколько комбинаций, которые усиливают одну гипотезу.
 
 Скрипт обучения автоматически добавляет в имя run-директории дату, branch, commit и состояние рабочей копии (`clean`/`dirty`). В `params/git.yaml` сохраняются также список незакоммиченных файлов и время запуска.
 
@@ -45,6 +46,8 @@ trainer.timesteps = max_iterations * rollouts
 - `--max_iterations=10000` → `320000` environment timesteps, промежуточная проверка;
 - `--max_iterations=25000` → `800000` environment timesteps, длинный полноценный запуск.
 
+Для ночного screening-прогона после 32k-step результатов использовать `--max_iterations=2000` → `64000` environment timesteps. Это вдвое длиннее исходного быстрого запуска; финальные выводы всё равно подтверждать на `800000` timesteps.
+
 При `2048` окружениях последний вариант соответствует примерно `1.64` млрд переходов среды. Для обучения без визуализации не добавлять `--viz` и `--video`.
 
 ### Какие метрики сравнивать
@@ -60,6 +63,8 @@ trainer.timesteps = max_iterations * rollouts
 - `Physical/sit/mean_joint_velocity_abs`: насколько робот продолжает двигаться во время сидения.
 - `Physical/command/*_fraction`: какая доля окружений сейчас сидит, идёт или получает положительную/отрицательную команду.
 - `Physical/termination/*`: доля падений и time-out.
+- `Physical/action/mean_abs`, `...mean_abs_rate` и `...saturation_fraction`: масштаб и дребезг action на уровне policy.
+- `Physical/target/mean_abs_step`: фактический сдвиг target после safety limiter.
 - `PhysicalHistogram/action/raw/*`: распределение сырых action от policy до clamp.
 - `PhysicalHistogram/action/clipped/*`: распределение action после ограничения `[-1, 1]`.
 - `PhysicalHistogram/action/scaled_delta/*`: фактическая масштабированная delta для target.
@@ -233,3 +238,22 @@ Next experiment:
 процессов недостаточно памяти, уменьшить `num_envs` одинаково для всей отдельной когорты и не
 сравнивать её samples/sec с когортой другого размера без явной пометки. Seed, число timesteps и
 пары сравниваемых конфигураций должны оставаться одинаковыми.
+
+### Ночная серия hypothesis bundles
+
+Когда screening уже показал, что один фактор вроде C резко ухудшает lifetime, не тратить всю ночь на его варианты. Для текущего робота приоритеты такие:
+
+| Bundle | Action | Reward | Policy | Физическая гипотеза |
+| --- | --- | --- | --- | --- |
+| `long-baseline` | delta | baseline | historical/unbounded | контроль 64k с тем же протоколом |
+| `delta-bounded` | delta | baseline | mean и sample clip в `[-1, 1]`, ограниченный log-std | policy перестаёт выдавать `±40`, шум остаётся рабочим |
+| `delta-survival` | delta | survival + speed + clearance | bounded | lifetime и speed не должны покупаться ценой падений |
+| `delta-smooth-clearance` | delta | clearance + action-rate | bounded | выше стопа, меньше дребезг и rate of target changes |
+| `absolute-target` | normalized absolute target | baseline | bounded | policy учит положение, а не интегрируемую delta |
+| `absolute-safe-task` | normalized absolute target + target rate limiter | task-balanced | bounded | безопасное управление с сохранением sit/stand |
+| `absolute-clearance` | normalized absolute target + target rate limiter | clearance + speed | bounded | прямой target лучше использует диапазон суставов для подъёма ноги |
+| `delta-task-repeat` | delta | task-balanced | bounded | повтор reward-гипотезы с акцентом на sit/stand и seed 43 |
+
+Все восемь веток используют одинаковые `num_envs`, seed и `64000` environment timesteps. Два запуска одновременно разрешены после проверки VRAM. После первых 30 минут проверять не reward, а прогресс checkpoint, `Physical/termination/terminated_rate`, среднее время жизни, `Physical/walk/speed_error_abs`, `Physical/walk/mean_foot_height`, `Physical/sit/mean_joint_angle_error_abs`, `Physical/action/mean_abs_rate` и saturation fraction.
+
+Безопасное правило замены: отменять запуск только если после 30 минут он явно деградирует сразу по нескольким критериям — нет новых checkpoint/timesteps, lifetime существенно ниже baseline и termination заметно выше, либо learning rate уже на нижнем пределе при одновременно ухудшающихся speed/clearance/sit метриках. Освободившийся слот отдавать следующей ещё не запущенной bundle-ветке; отменённый run сохранять в реестре как `stopped_early` с причиной.

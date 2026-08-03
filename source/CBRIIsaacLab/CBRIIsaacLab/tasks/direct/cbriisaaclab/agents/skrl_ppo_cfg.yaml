@@ -10,6 +10,9 @@ models:
     # Isaac Lab's integer action-space specification is unbounded in skrl 2.1.
     # The environment clamps actions to [-1, 1] before scaling them.
     clip_actions: False
+    # Historical baseline keeps these disabled. Bounded-policy runs enable
+    # both action and mean clipping from scripts/skrl/train.py.
+    clip_mean_actions: False
     clip_log_std: True
     min_log_std: -20.0
     max_log_std: 2.0
