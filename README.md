@@ -127,6 +127,66 @@ Then you can run pre-commit with:
 pre-commit run --all-files
 ```
 
+## Training comparison workflow
+
+The reproducible experiment protocol is documented in [TRAINING_PLAN.md](TRAINING_PLAN.md).
+The quick comparison uses a fixed seed, environment count, and `32,000` environment steps:
+
+```bash
+VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/train.py \
+    --task=Template-Cbriisaaclab-Direct-v0 \
+    --num_envs=2048 \
+    --max_iterations=1000 \
+    --seed=42
+```
+
+`max_iterations=1000` means `1000 * rollouts(32) = 32,000` trainer steps. Every run stores
+the environment and PPO configuration, git provenance, checkpoints, TensorBoard event files,
+and the full training trajectory under `logs/skrl/cbr_i_ppo/`. Compare all recorded steps,
+not just the tail of a run.
+
+### Single-factor and cross-factor experiments
+
+Keep one-factor branches for attribution, then add cross-factor branches to measure interactions.
+The initial factors are:
+
+| Factor | Change |
+| --- | --- |
+| A | `add_noise=False` |
+| B | `initial_tilt_angle_variation=0.0` |
+| C | `agent.mini_batches=4` |
+
+Run `A`, `B`, and `C` independently, followed by selected combinations such as `A+B`, `A+C`,
+`B+C`, and `A+B+C`. Each branch must change only the listed values relative to the common base;
+the report should distinguish the individual effect from the interaction effect.
+
+### Parallel runs and GPU memory
+
+Parallel training is allowed only when the available VRAM has been checked with `nvidia-smi`.
+On an 8 GB GPU, two processes using `2048` environments may not fit. If two processes are run
+in parallel, use the same reduced `--num_envs` for the whole comparison cohort (for example,
+`1024` per process), and do not compare that cohort's raw speed directly with a `2048`-environment
+cohort. Keep each process on a separate log directory and stop the pair if memory use approaches
+the device limit.
+
+### Checkpoint video
+
+Record one complete `25 s` episode from the last checkpoint with 16 environments (`0.02 s` per
+environment step, so use `--video_length=1250`):
+
+```bash
+VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/play.py \
+    --task=Template-Cbriisaaclab-Direct-v0 \
+    --checkpoint=logs/skrl/cbr_i_ppo/<run>/checkpoints/<checkpoint>.pt \
+    --num_envs=16 \
+    --video \
+    --video_length=1250
+```
+
+The MP4 is written to `<run>/videos/play/`. The playback script also adds it as an
+`Evaluation/video/<checkpoint>` TensorBoard video summary in the same run directory when the
+optional decoder is available.
+
 ## Troubleshooting
 
 ### Pylance Missing Indexing of Extensions
