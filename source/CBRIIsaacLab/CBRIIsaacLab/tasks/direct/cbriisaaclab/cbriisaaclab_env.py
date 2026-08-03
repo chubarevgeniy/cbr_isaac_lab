@@ -56,6 +56,11 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.right_hip_shin_dof_name_idx[0],
             self.left_hip_shin_dof_name_idx[0]
         ]
+        self.sitting_joint_indices = [
+            self.rotor_rod_dof_name_idx[0],
+            self.rod_body_dof_name_idx[0],
+            *self.actuated_dof_indices,
+        ]
 
         # Pre-compute indices for observations to avoid fragile slicing
         self.obs_joint_pos_indices = torch.tensor(
@@ -89,6 +94,18 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
         self.targets = torch.zeros((self.num_envs, 4), device=self.device)
         self.target_delta = torch.zeros((self.num_envs, 4), device=self.device)
+        self.sitting_target = torch.tensor(
+            [
+                self.cfg.sitting_target_state["rotor_rod"],
+                self.cfg.sitting_target_state["rod_body"],
+                self.cfg.sitting_target_state["body_right_hip"],
+                self.cfg.sitting_target_state["body_left_hip"],
+                self.cfg.sitting_target_state["right_hip_shin"],
+                self.cfg.sitting_target_state["left_hip_shin"],
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
 
     def _setup_scene(self):
         # Initialize the robot
@@ -432,18 +449,25 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.right_knee_idx[0], self._right_foot_offset
         )
 
-        rewards, feet_slide_penalty, feet_clearance_reward = compute_rewards(
+        (
+            rewards,
+            velocity_tracking_reward,
+            feet_slide_penalty,
+            feet_clearance_reward,
+            target_change_penalty,
+            alive_reward,
+            termination_penalty,
+            positive_velocity_tracking,
+            negative_velocity_tracking,
+            positive_speed_error,
+            negative_speed_error,
+        ) = compute_rewards(
             body_vel=self.joint_vel[:, self.base_rotor_dof_name_idx],
-            body_height=self.joint_pos[:, self.rotor_rod_dof_name_idx],
+            height_joint_angle=self.joint_pos[:, self.rotor_rod_dof_name_idx],
             body_angle=self.joint_pos[:, self.rod_body_dof_name_idx],
-            right_hip_angle=self.joint_pos[:, self.body_right_hip_dof_name_idx],
-            left_hip_angle=self.joint_pos[:, self.body_left_hip_dof_name_idx],
-            right_knee_angle=self.joint_pos[:, self.right_hip_shin_dof_name_idx],
-            left_knee_angle=self.joint_pos[:, self.left_hip_shin_dof_name_idx],
-            right_hip_vel=self.joint_vel[:, self.body_right_hip_dof_name_idx],
-            left_hip_vel=self.joint_vel[:, self.body_left_hip_dof_name_idx],
-            right_knee_vel=self.joint_vel[:, self.right_hip_shin_dof_name_idx],
-            left_knee_vel=self.joint_vel[:, self.left_hip_shin_dof_name_idx],
+            actuated_joint_velocities=self.joint_vel[:, self.actuated_dof_indices],
+            sitting_joint_positions=self.joint_pos[:, self.sitting_joint_indices],
+            sitting_target=self.sitting_target,
             left_knee_location=self._get_left_knee_location(),
             right_knee_location=self._get_right_knee_location(),
             left_foot_location=left_foot_location,
@@ -455,6 +479,20 @@ class CbriisaaclabEnv(DirectRLEnv):
             reset_terminated=self.reset_terminated,
             command=self.command[:,[0,4]],
             target_delta=self.target_delta,
+            velocity_tracking_reward_scale=self.cfg.velocity_tracking_reward_scale,
+            velocity_tracking_error_std=self.cfg.velocity_tracking_error_std,
+            walking_height_joint_target=self.cfg.walking_height_joint_target,
+            walking_height_joint_penalty_scale=self.cfg.walking_height_joint_penalty_scale,
+            walking_body_angle_target=self.cfg.walking_body_angle_target,
+            walking_body_angle_penalty_scale=self.cfg.walking_body_angle_penalty_scale,
+            walking_joint_velocity_penalty_scale=self.cfg.walking_joint_velocity_penalty_scale,
+            low_knee_height_threshold=self.cfg.low_knee_height_threshold,
+            low_knee_penalty_scale=self.cfg.low_knee_penalty_scale,
+            sitting_joint_position_penalty_scale=self.cfg.sitting_joint_position_penalty_scale,
+            sitting_velocity_penalty_scale=self.cfg.sitting_velocity_penalty_scale,
+            sitting_reward_scale=self.cfg.sitting_reward_scale,
+            alive_reward_scale=self.cfg.alive_reward_scale,
+            termination_penalty_scale=self.cfg.termination_penalty_scale,
             target_change_penalty_scale=self.cfg.target_change_penalty_scale,
             feet_slide_penalty_scale=self.cfg.feet_slide_penalty_scale,
             feet_clearance_reward_scale=self.cfg.feet_clearance_reward_scale,
@@ -467,9 +505,26 @@ class CbriisaaclabEnv(DirectRLEnv):
         # these values every step serializes the CUDA stream, so log them sparsely.
         self.extras.pop("log", None)
         if self.common_step_counter % self.cfg.reward_log_interval == 0:
+            walking_command = self.command[:, 0] == 0
+            positive_speed_command = walking_command & (
+                self.command[:, 4] > self.cfg.moving_command_threshold
+            )
+            negative_speed_command = walking_command & (
+                self.command[:, 4] < -self.cfg.moving_command_threshold
+            )
+            positive_count = positive_speed_command.float().sum().clamp_min(1.0)
+            negative_count = negative_speed_command.float().sum().clamp_min(1.0)
             self.extras["log"] = {
+                "Reward/velocity_tracking": velocity_tracking_reward.mean(),
+                "Reward/velocity_tracking_positive": positive_velocity_tracking.sum() / positive_count,
+                "Reward/velocity_tracking_negative": negative_velocity_tracking.sum() / negative_count,
                 "Reward/feet_slide_penalty": feet_slide_penalty.mean(),
                 "Reward/feet_clearance": feet_clearance_reward.mean(),
+                "Reward/target_change_penalty": target_change_penalty.mean(),
+                "Reward/alive": alive_reward.mean(),
+                "Reward/termination_penalty": termination_penalty.mean(),
+                "Metrics/speed_error_positive": positive_speed_error.sum() / positive_count,
+                "Metrics/speed_error_negative": negative_speed_error.sum() / negative_count,
                 "Metrics/left_foot_contact_rate": left_foot_contact.float().mean(),
                 "Metrics/right_foot_contact_rate": right_foot_contact.float().mean(),
             }
@@ -551,16 +606,11 @@ class CbriisaaclabEnv(DirectRLEnv):
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
-    body_height: torch.Tensor,
+    height_joint_angle: torch.Tensor,
     body_angle: torch.Tensor,
-    right_hip_angle: torch.Tensor,
-    left_hip_angle: torch.Tensor,
-    right_knee_angle: torch.Tensor,
-    left_knee_angle: torch.Tensor,
-    right_hip_vel: torch.Tensor,
-    left_hip_vel: torch.Tensor,
-    right_knee_vel: torch.Tensor,
-    left_knee_vel: torch.Tensor,
+    actuated_joint_velocities: torch.Tensor,
+    sitting_joint_positions: torch.Tensor,
+    sitting_target: torch.Tensor,
     left_knee_location: torch.Tensor,
     right_knee_location: torch.Tensor,
     left_foot_location: torch.Tensor,
@@ -572,6 +622,20 @@ def compute_rewards(
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     target_delta: torch.Tensor,
+    velocity_tracking_reward_scale: float,
+    velocity_tracking_error_std: float,
+    walking_height_joint_target: float,
+    walking_height_joint_penalty_scale: float,
+    walking_body_angle_target: float,
+    walking_body_angle_penalty_scale: float,
+    walking_joint_velocity_penalty_scale: float,
+    low_knee_height_threshold: float,
+    low_knee_penalty_scale: float,
+    sitting_joint_position_penalty_scale: float,
+    sitting_velocity_penalty_scale: float,
+    sitting_reward_scale: float,
+    alive_reward_scale: float,
+    termination_penalty_scale: float,
     target_change_penalty_scale: float,
     feet_slide_penalty_scale: float,
     feet_clearance_reward_scale: float,
@@ -582,29 +646,49 @@ def compute_rewards(
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
     is_sitting_command = command[:, 0] == 1
+    is_walking_command = ~is_sitting_command
 
-    # Common rewards/penalties for all envs
-    termination_penalty = reset_terminated.float() * -20
-    alive_reward = (1.0 - reset_terminated.float()) * 0.05
+    # Common rewards and penalties.
+    termination_penalty = reset_terminated.float() * -termination_penalty_scale
+    alive_reward = (1.0 - reset_terminated.float()) * alive_reward_scale
 
     # --- Rewards for walking ---
-    # Penalize deviation from target speed and encourage standing height
-    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
-    walk_reward += right_hip_vel.abs().squeeze(-1) * -0.00001
-    walk_reward += left_hip_vel.abs().squeeze(-1) * -0.00001
-    walk_reward += right_knee_vel.abs().squeeze(-1) * -0.00001
-    walk_reward += left_knee_vel.abs().squeeze(-1) * -0.00001
-    walk_reward += body_height.squeeze(-1) * -0.5
-    walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
+    # Positive bounded reward for matching the commanded speed. This gives a
+    # clear maximum at exact tracking instead of making every walking step
+    # negative and accumulating error over a long successful episode.
+    speed_error = body_vel.squeeze(-1) - command[:, 1]
+    velocity_tracking_reward = (
+        is_walking_command.float()
+        * velocity_tracking_reward_scale
+        * torch.exp(
+            -(speed_error * speed_error)
+            / (velocity_tracking_error_std * velocity_tracking_error_std)
+        )
+    )
+    positive_speed_command = is_walking_command & (command[:, 1] > moving_command_threshold)
+    negative_speed_command = is_walking_command & (command[:, 1] < -moving_command_threshold)
+    positive_velocity_tracking = positive_speed_command.float() * velocity_tracking_reward
+    negative_velocity_tracking = negative_speed_command.float() * velocity_tracking_reward
+    positive_speed_error = positive_speed_command.float() * torch.abs(speed_error)
+    negative_speed_error = negative_speed_command.float() * torch.abs(speed_error)
+    walk_reward = velocity_tracking_reward.clone()
 
-    moving_command = (~is_sitting_command) & (command[:, 1].abs() > moving_command_threshold)
-    walk_reward += (~is_sitting_command & (left_knee_location[:, 2] < 0.1)).float() * -0.05
-    walk_reward += (~is_sitting_command & (right_knee_location[:, 2] < 0.1)).float() * -0.05
+    joint_velocity_penalty = torch.sum(torch.abs(actuated_joint_velocities), dim=-1)
+    walk_reward -= walking_joint_velocity_penalty_scale * joint_velocity_penalty
+    walk_reward -= walking_height_joint_penalty_scale * torch.abs(
+        height_joint_angle.squeeze(-1) - walking_height_joint_target
+    )
+    walk_reward -= walking_body_angle_penalty_scale * torch.abs(
+        body_angle.squeeze(-1) - walking_body_angle_target
+    )
 
-    # Previous height-proxy approach (kept for reference, but disabled).
-    # feet_drag_penalty = torch.exp(-left_foot_location[:, 2] * 15.0) * torch.norm(left_foot_vel[:, :2], dim=-1)
-    # feet_drag_penalty += torch.exp(-right_foot_location[:, 2] * 15.0) * torch.norm(right_foot_vel[:, :2], dim=-1)
-    # walk_reward += feet_drag_penalty * -0.03
+    moving_command = is_walking_command & (command[:, 1].abs() > moving_command_threshold)
+    walk_reward -= (
+        moving_command & (left_knee_location[:, 2] < low_knee_height_threshold)
+    ).float() * low_knee_penalty_scale
+    walk_reward -= (
+        moving_command & (right_knee_location[:, 2] < low_knee_height_threshold)
+    ).float() * low_knee_penalty_scale
 
     # Penalize horizontal motion only while a foot is physically in contact.
     left_foot_speed = torch.norm(left_foot_vel[:, :2], dim=-1)
@@ -615,9 +699,7 @@ def compute_rewards(
     )
     walk_reward -= feet_slide_penalty_scale * feet_slide_penalty
 
-    # Reward upward motion of the swing foot above the stance foot. Relative height
-    # makes the term work on uneven terrain. tanh has no hard target/cutoff, so a
-    # higher lift is always worth a little more without making the reward unbounded.
+    # Reward upward motion of the swing foot above the stance foot.
     single_support = torch.logical_xor(left_foot_contact, right_foot_contact)
     swing_foot_height = torch.where(
         left_foot_contact,
@@ -638,92 +720,39 @@ def compute_rewards(
     )
     walk_reward += feet_clearance_reward_scale * feet_clearance_reward
 
-    # Penalty for both feet on the ground when commanded to move
-    # left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
-    # right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
-    # walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
-
-
     # --- Rewards for sitting ---
-    # Penalize any velocity to encourage being still.
-    # You could also add a reward for being at a low height.
-    sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
-    sit_reward += body_vel.abs().squeeze(-1) * -0.1
-    sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
-    sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.1
-    sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.1
-    sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
-    sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
+    sitting_position_error = torch.sum(
+        torch.abs(sitting_joint_positions - sitting_target.unsqueeze(0)), dim=-1
+    )
+    sit_reward = -sitting_joint_position_penalty_scale * sitting_position_error
+    sit_reward -= sitting_velocity_penalty_scale * body_vel.abs().squeeze(-1)
 
-    # Penalize target changes, not the absolute desired target. Since the policy
-    # step is fixed, delta-target squared is proportional to commanded speed^2.
+    # Penalize target changes, not the absolute desired target.
     target_change_penalty = (
         torch.sum(target_delta ** 2, dim=-1) * -target_change_penalty_scale
     )
 
-    # Select the appropriate reward based on the command
-    total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
+    # Select the appropriate reward based on the command.
+    total_reward = torch.where(
+        is_sitting_command,
+        sit_reward * sitting_reward_scale,
+        walk_reward,
+    )
 
-    # Add common rewards
     total_reward += alive_reward + termination_penalty + target_change_penalty
-    return total_reward, feet_slide_penalty, feet_clearance_reward
-
-# @torch.jit.script
-# def compute_rewards(
-#     body_vel: torch.Tensor,
-#     body_height: torch.Tensor,
-#     body_angle: torch.Tensor,
-#     right_hip_angle: torch.Tensor,
-#     left_hip_angle: torch.Tensor,
-#     right_knee_angle: torch.Tensor,
-#     left_knee_angle: torch.Tensor,
-#     left_knee_location: torch.Tensor,
-#     right_knee_location: torch.Tensor,
-#     left_foot_location: torch.Tensor,
-#     right_foot_location: torch.Tensor,
-#     reset_terminated: torch.Tensor,
-#     command: torch.Tensor,
-# ):
-#     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
-#     # command[:, 1] is the target speed
-#     is_sitting_command = command[:, 0] == 1
-
-#     # Common rewards/penalties for all envs
-#     termination_penalty = reset_terminated.float() * -25.0
-#     alive_reward = (1.0 - reset_terminated.float()) * 0.1
-
-#     # --- Rewards for walking ---
-#     # Penalize deviation from target speed and encourage standing height
-#     walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * -0.15
-#     walk_reward += body_height.sum(dim=-1) * -0.35
-#     walk_reward += (body_angle).abs().squeeze(dim=-1) * -0.05
-
-#     moving_command = command[:, 1].abs() > 0.15
-#     walk_reward += (moving_command & (left_knee_location[:, 2] < 0.1)).float() * -0.1
-#     walk_reward += (moving_command & (right_knee_location[:, 2] < 0.1)).float() * -0.1
-
-#     # Penalty for both feet on the ground when commanded to move
-#     left_foot_low = (left_foot_location[:, 2] < 0.07) | (left_foot_location[:, 2] > left_knee_location[:, 2])
-#     right_foot_low = (right_foot_location[:, 2] < 0.07) | (right_foot_location[:, 2] > right_knee_location[:, 2])
-#     walk_reward += (moving_command & left_foot_low & right_foot_low).float() * -0.03
-
-
-#     # --- Rewards for sitting ---
-#     # Penalize any velocity to encourage being still.
-#     # You could also add a reward for being at a low height.
-#     sit_reward = (body_height-5.2 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.1
-#     sit_reward += (body_angle+80.0 * torch.pi / 180.0).abs().squeeze(dim=-1) * -0.05
-#     sit_reward += (right_hip_angle).abs().squeeze(dim=-1) * -0.05
-#     sit_reward += (left_hip_angle).abs().squeeze(dim=-1) * -0.05
-#     sit_reward += (right_knee_angle+124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
-#     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.05
-
-#     # Select the appropriate reward based on the command
-#     total_reward = torch.where(is_sitting_command, sit_reward*0.5, walk_reward)
-
-#     # Add common rewards
-#     total_reward += alive_reward + termination_penalty
-#     return total_reward
+    return (
+        total_reward,
+        velocity_tracking_reward,
+        feet_slide_penalty,
+        feet_clearance_reward,
+        target_change_penalty,
+        alive_reward,
+        termination_penalty,
+        positive_velocity_tracking,
+        negative_velocity_tracking,
+        positive_speed_error,
+        negative_speed_error,
+    )
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""
