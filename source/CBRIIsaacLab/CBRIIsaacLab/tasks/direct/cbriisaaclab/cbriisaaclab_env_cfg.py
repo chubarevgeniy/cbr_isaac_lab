@@ -125,6 +125,12 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     noise_angle_vel = 0.05
     noise_vel = 0.1
 
+    # diagnostics
+    # Metrics are emitted sparsely because skrl converts logged CUDA scalars to
+    # Python values, which synchronizes the CUDA stream.
+    metrics_log_interval = 100
+    metrics_speed_command_threshold = 0.05
+
     #commands settings
     command_info_cfg = {
         'sit_min':phys_sps/decimation * 1,

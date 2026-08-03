@@ -397,28 +397,239 @@ class CbriisaaclabEnv(DirectRLEnv):
         }
     
     def _get_rewards(self):
-        return compute_rewards(
-            body_vel=self.joint_vel[:, self.base_rotor_dof_name_idx],
-            body_height=self.joint_pos[:, self.rotor_rod_dof_name_idx],
-            body_angle=self.joint_pos[:, self.rod_body_dof_name_idx],
-            right_hip_angle=self.joint_pos[:, self.body_right_hip_dof_name_idx],
-            left_hip_angle=self.joint_pos[:, self.body_left_hip_dof_name_idx],
-            right_knee_angle=self.joint_pos[:, self.right_hip_shin_dof_name_idx],
-            left_knee_angle=self.joint_pos[:, self.left_hip_shin_dof_name_idx],
-            right_hip_vel=self.joint_vel[:, self.body_right_hip_dof_name_idx],
-            left_hip_vel=self.joint_vel[:, self.body_left_hip_dof_name_idx],
-            right_knee_vel=self.joint_vel[:, self.right_hip_shin_dof_name_idx],
-            left_knee_vel=self.joint_vel[:, self.left_hip_shin_dof_name_idx],
-            left_knee_location=self._get_left_knee_location(),
-            right_knee_location=self._get_right_knee_location(),
-            left_foot_location=self._get_left_foot_location()[0],
-            right_foot_location=self._get_right_foot_location()[0],
-            left_foot_vel=self._get_left_foot_velocity(),
-            right_foot_vel=self._get_right_foot_velocity(),
+        body_vel = self.joint_vel[:, self.base_rotor_dof_name_idx]
+        body_height = self.joint_pos[:, self.rotor_rod_dof_name_idx]
+        body_angle = self.joint_pos[:, self.rod_body_dof_name_idx]
+        right_hip_angle = self.joint_pos[:, self.body_right_hip_dof_name_idx]
+        left_hip_angle = self.joint_pos[:, self.body_left_hip_dof_name_idx]
+        right_knee_angle = self.joint_pos[:, self.right_hip_shin_dof_name_idx]
+        left_knee_angle = self.joint_pos[:, self.left_hip_shin_dof_name_idx]
+        right_hip_vel = self.joint_vel[:, self.body_right_hip_dof_name_idx]
+        left_hip_vel = self.joint_vel[:, self.body_left_hip_dof_name_idx]
+        right_knee_vel = self.joint_vel[:, self.right_hip_shin_dof_name_idx]
+        left_knee_vel = self.joint_vel[:, self.left_hip_shin_dof_name_idx]
+        left_knee_location = self._get_left_knee_location()
+        right_knee_location = self._get_right_knee_location()
+        left_foot_location = self._get_left_foot_location()[0]
+        right_foot_location = self._get_right_foot_location()[0]
+        left_foot_vel = self._get_left_foot_velocity()
+        right_foot_vel = self._get_right_foot_velocity()
+        command = self.command[:, [0, 4]]
+
+        rewards = compute_rewards(
+            body_vel=body_vel,
+            body_height=body_height,
+            body_angle=body_angle,
+            right_hip_angle=right_hip_angle,
+            left_hip_angle=left_hip_angle,
+            right_knee_angle=right_knee_angle,
+            left_knee_angle=left_knee_angle,
+            right_hip_vel=right_hip_vel,
+            left_hip_vel=left_hip_vel,
+            right_knee_vel=right_knee_vel,
+            left_knee_vel=left_knee_vel,
+            left_knee_location=left_knee_location,
+            right_knee_location=right_knee_location,
+            left_foot_location=left_foot_location,
+            right_foot_location=right_foot_location,
+            left_foot_vel=left_foot_vel,
+            right_foot_vel=right_foot_vel,
             reset_terminated=self.reset_terminated,
-            command=self.command[:,[0,4]],
+            command=command,
             actions=self.actions,
         )
+
+        self.extras.pop("log", None)
+        if self.common_step_counter % self.cfg.metrics_log_interval == 0:
+            self.extras["log"] = self._get_physical_metrics(
+                body_vel=body_vel,
+                body_height=body_height,
+                body_angle=body_angle,
+                right_hip_angle=right_hip_angle,
+                left_hip_angle=left_hip_angle,
+                right_knee_angle=right_knee_angle,
+                left_knee_angle=left_knee_angle,
+                right_hip_vel=right_hip_vel,
+                left_hip_vel=left_hip_vel,
+                right_knee_vel=right_knee_vel,
+                left_knee_vel=left_knee_vel,
+                left_knee_location=left_knee_location,
+                right_knee_location=right_knee_location,
+                left_foot_location=left_foot_location,
+                right_foot_location=right_foot_location,
+                left_foot_vel=left_foot_vel,
+                right_foot_vel=right_foot_vel,
+                command=command,
+            )
+        return rewards
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Compute a mean on selected environments without synchronizing the device."""
+        mask_float = mask.to(dtype=values.dtype)
+        return (values * mask_float).sum() / mask_float.sum().clamp_min(1.0)
+
+    def _get_physical_metrics(
+        self,
+        body_vel: torch.Tensor,
+        body_height: torch.Tensor,
+        body_angle: torch.Tensor,
+        right_hip_angle: torch.Tensor,
+        left_hip_angle: torch.Tensor,
+        right_knee_angle: torch.Tensor,
+        left_knee_angle: torch.Tensor,
+        right_hip_vel: torch.Tensor,
+        left_hip_vel: torch.Tensor,
+        right_knee_vel: torch.Tensor,
+        left_knee_vel: torch.Tensor,
+        left_knee_location: torch.Tensor,
+        right_knee_location: torch.Tensor,
+        left_foot_location: torch.Tensor,
+        right_foot_location: torch.Tensor,
+        left_foot_vel: torch.Tensor,
+        right_foot_vel: torch.Tensor,
+        command: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Return physical diagnostics grouped by sitting and walking commands.
+
+        The returned values stay on the environment device. skrl converts them
+        to scalars only when it consumes ``extras['log']``; keeping the
+        calculations here on the device avoids an explicit CPU round-trip.
+        """
+        body_vel = body_vel.squeeze(-1)
+        body_height = body_height.squeeze(-1)
+        body_angle = body_angle.squeeze(-1)
+        right_hip_angle = right_hip_angle.squeeze(-1)
+        left_hip_angle = left_hip_angle.squeeze(-1)
+        right_knee_angle = right_knee_angle.squeeze(-1)
+        left_knee_angle = left_knee_angle.squeeze(-1)
+        right_hip_vel = right_hip_vel.squeeze(-1)
+        left_hip_vel = left_hip_vel.squeeze(-1)
+        right_knee_vel = right_knee_vel.squeeze(-1)
+        left_knee_vel = left_knee_vel.squeeze(-1)
+        rotor_rod_vel = self.joint_vel[:, self.rotor_rod_dof_name_idx].squeeze(-1)
+        rod_body_vel = self.joint_vel[:, self.rod_body_dof_name_idx].squeeze(-1)
+
+        sitting = command[:, 0] == 1
+        walking = ~sitting
+        target_speed = command[:, 1]
+        moving = walking & (target_speed.abs() >= self.cfg.metrics_speed_command_threshold)
+        positive_speed = moving & (target_speed > 0.0)
+        negative_speed = moving & (target_speed < 0.0)
+        speed_error = body_vel - target_speed
+
+        body_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
+        torso_height = body_pose[:, 2]
+        head_height = self._get_top_torso_location()[0][:, 2]
+        left_foot_height = left_foot_location[:, 2]
+        right_foot_height = right_foot_location[:, 2]
+        left_knee_height = left_knee_location[:, 2]
+        right_knee_height = right_knee_location[:, 2]
+        left_foot_speed = torch.linalg.vector_norm(left_foot_vel[:, :2], dim=-1)
+        right_foot_speed = torch.linalg.vector_norm(right_foot_vel[:, :2], dim=-1)
+
+        sit_rotor_target = 5.2 * math.pi / 180.0
+        sit_rod_target = -80.0 * math.pi / 180.0
+        sit_right_knee_target = -124.0 * math.pi / 180.0 * 0.99
+        sit_left_knee_target = 124.0 * math.pi / 180.0 * 0.99
+        sit_rotor_error = body_height - sit_rotor_target
+        sit_rod_error = body_angle - sit_rod_target
+        sit_right_hip_error = right_hip_angle
+        sit_left_hip_error = left_hip_angle
+        sit_right_knee_error = right_knee_angle - sit_right_knee_target
+        sit_left_knee_error = left_knee_angle - sit_left_knee_target
+        sit_joint_angle_error = torch.stack(
+            (
+                sit_rotor_error,
+                sit_rod_error,
+                sit_right_hip_error,
+                sit_left_hip_error,
+                sit_right_knee_error,
+                sit_left_knee_error,
+            ),
+            dim=-1,
+        )
+        sit_joint_velocity = torch.stack(
+            (
+                rotor_rod_vel,
+                rod_body_vel,
+                body_vel,
+                right_hip_vel,
+                left_hip_vel,
+                right_knee_vel,
+                left_knee_vel,
+            ),
+            dim=-1,
+        )
+
+        metrics = {
+            "Physical/command/walking_fraction": walking.float().mean(),
+            "Physical/command/sitting_fraction": sitting.float().mean(),
+            "Physical/command/moving_fraction": moving.float().mean(),
+            "Physical/command/positive_speed_fraction": positive_speed.float().mean(),
+            "Physical/command/negative_speed_fraction": negative_speed.float().mean(),
+            "Physical/termination/terminated_rate": self.reset_terminated.float().mean(),
+            "Physical/termination/timeout_rate": self.reset_time_outs.float().mean(),
+            "Physical/walk/torso_height": self._masked_mean(torso_height, walking),
+            "Physical/walk/head_height": self._masked_mean(head_height, walking),
+            "Physical/walk/left_knee_height": self._masked_mean(left_knee_height, walking),
+            "Physical/walk/right_knee_height": self._masked_mean(right_knee_height, walking),
+            "Physical/walk/left_foot_height": self._masked_mean(left_foot_height, walking),
+            "Physical/walk/right_foot_height": self._masked_mean(right_foot_height, walking),
+            "Physical/walk/mean_foot_height": self._masked_mean(
+                (left_foot_height + right_foot_height) * 0.5, walking
+            ),
+            "Physical/walk/rotor_rod_angle": self._masked_mean(body_height, walking),
+            "Physical/walk/rod_body_angle": self._masked_mean(body_angle, walking),
+            "Physical/walk/rotor_rod_angle_abs": self._masked_mean(body_height.abs(), walking),
+            "Physical/walk/rod_body_angle_abs": self._masked_mean(body_angle.abs(), walking),
+            "Physical/walk/rotor_rod_angular_velocity_abs": self._masked_mean(rotor_rod_vel.abs(), walking),
+            "Physical/walk/rod_body_angular_velocity_abs": self._masked_mean(rod_body_vel.abs(), walking),
+            "Physical/walk/body_velocity": self._masked_mean(body_vel, walking),
+            "Physical/walk/body_velocity_abs": self._masked_mean(body_vel.abs(), walking),
+            "Physical/walk/target_speed": self._masked_mean(target_speed, moving),
+            "Physical/walk/speed_error_signed": self._masked_mean(speed_error, moving),
+            "Physical/walk/speed_error_abs": self._masked_mean(speed_error.abs(), moving),
+            "Physical/walk/speed_error_positive_command_signed": self._masked_mean(
+                speed_error, positive_speed
+            ),
+            "Physical/walk/speed_error_positive_command_abs": self._masked_mean(
+                speed_error.abs(), positive_speed
+            ),
+            "Physical/walk/speed_error_negative_command_signed": self._masked_mean(
+                speed_error, negative_speed
+            ),
+            "Physical/walk/speed_error_negative_command_abs": self._masked_mean(
+                speed_error.abs(), negative_speed
+            ),
+            "Physical/walk/left_foot_horizontal_speed": self._masked_mean(left_foot_speed, walking),
+            "Physical/walk/right_foot_horizontal_speed": self._masked_mean(right_foot_speed, walking),
+            "Physical/walk/mean_foot_horizontal_speed": self._masked_mean(
+                (left_foot_speed + right_foot_speed) * 0.5, walking
+            ),
+            "Physical/walk/left_foot_vertical_velocity": self._masked_mean(left_foot_vel[:, 2], walking),
+            "Physical/walk/right_foot_vertical_velocity": self._masked_mean(right_foot_vel[:, 2], walking),
+            "Physical/sit/torso_height": self._masked_mean(torso_height, sitting),
+            "Physical/sit/head_height": self._masked_mean(head_height, sitting),
+            "Physical/sit/rotor_rod_angle_error_signed": self._masked_mean(sit_rotor_error, sitting),
+            "Physical/sit/rotor_rod_angle_error_abs": self._masked_mean(sit_rotor_error.abs(), sitting),
+            "Physical/sit/rod_body_angle_error_signed": self._masked_mean(sit_rod_error, sitting),
+            "Physical/sit/rod_body_angle_error_abs": self._masked_mean(sit_rod_error.abs(), sitting),
+            "Physical/sit/right_hip_angle_error_abs": self._masked_mean(sit_right_hip_error.abs(), sitting),
+            "Physical/sit/left_hip_angle_error_abs": self._masked_mean(sit_left_hip_error.abs(), sitting),
+            "Physical/sit/right_knee_angle_error_abs": self._masked_mean(sit_right_knee_error.abs(), sitting),
+            "Physical/sit/left_knee_angle_error_abs": self._masked_mean(sit_left_knee_error.abs(), sitting),
+            "Physical/sit/mean_joint_angle_error_abs": self._masked_mean(
+                sit_joint_angle_error.abs().mean(dim=-1), sitting
+            ),
+            "Physical/sit/rotor_rod_angular_velocity_abs": self._masked_mean(rotor_rod_vel.abs(), sitting),
+            "Physical/sit/rod_body_angular_velocity_abs": self._masked_mean(rod_body_vel.abs(), sitting),
+            "Physical/sit/body_velocity_abs": self._masked_mean(body_vel.abs(), sitting),
+            "Physical/sit/mean_joint_velocity_abs": self._masked_mean(
+                sit_joint_velocity.abs().mean(dim=-1), sitting
+            ),
+        }
+        return metrics
 
     def _get_dones(self):
         # Isaac Lab 3.0 exposes simulation buffers through explicit torch views.

@@ -65,7 +65,10 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import os
 import random
+import re
+import subprocess
 from datetime import datetime
+from pathlib import Path
 
 import skrl
 from packaging import version
@@ -106,6 +109,50 @@ algorithm = args_cli.algorithm.lower()
 agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
 
 
+def get_git_metadata() -> dict:
+    """Collect the repository state at the moment the training run starts."""
+    repo_root = Path(__file__).resolve().parents[2]
+
+    def run_git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    try:
+        branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
+        commit = run_git("rev-parse", "--short", "HEAD")
+        status_output = run_git("status", "--porcelain=1", "--untracked-files=all")
+        dirty_files = status_output.splitlines()
+        return {
+            "repository": str(repo_root),
+            "branch": branch,
+            "commit": commit,
+            "worktree": "dirty" if dirty_files else "clean",
+            "dirty_files": dirty_files,
+            "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return {
+            "repository": str(repo_root),
+            "branch": "unknown",
+            "commit": "unknown",
+            "worktree": "unknown",
+            "dirty_files": [],
+            "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "error": str(exc),
+        }
+
+
+def sanitize_run_component(value: str) -> str:
+    """Convert a git value into a filesystem-safe run-name component."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._-") or "unknown"
+
+
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with skrl agent."""
@@ -137,8 +184,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
+    git_metadata = get_git_metadata()
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_branch = sanitize_run_component(git_metadata["branch"])
+    run_commit = sanitize_run_component(git_metadata["commit"])
+    run_worktree = sanitize_run_component(git_metadata["worktree"])
+    # Include source-control provenance in the default run directory name.
+    log_dir = (
+        f"{run_timestamp}_{run_branch}_{run_commit}_{run_worktree}_{algorithm}_{args_cli.ml_framework}"
+    )
+    print(
+        f"[INFO] Git state: branch={git_metadata['branch']}, commit={git_metadata['commit']}, "
+        f"worktree={git_metadata['worktree']}"
+    )
+    if git_metadata["dirty_files"]:
+        print(f"[INFO] Uncommitted paths at launch: {len(git_metadata['dirty_files'])}; see params/git.yaml")
     # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
     print(f"Exact experiment name requested from command line: {log_dir}")
     if agent_cfg["agent"]["experiment"]["experiment_name"]:
@@ -152,6 +212,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    git_metadata["run_name"] = log_dir
+    dump_yaml(os.path.join(log_dir, "params", "git.yaml"), git_metadata)
 
     # get checkpoint path (to resume training)
     resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
