@@ -1,7 +1,7 @@
 # Результаты overnight hypothesis bundles
 
 Дата серии: `2026-08-03/04`  
-Каноническая ветка документации: `experiment/results-full-trajectory`  
+Каноническая ветка документации: `experiment/staged-training`
 Реестр: [`logs/overnight/2026-08-03_22-43-20/status.json`](logs/overnight/2026-08-03_22-43-20/status.json)  
 Supervisor log: [`logs/overnight/supervisor-daemon.log`](logs/overnight/supervisor-daemon.log)
 

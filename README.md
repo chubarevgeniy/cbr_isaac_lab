@@ -129,13 +129,14 @@ pre-commit run --all-files
 
 ## Каноническая рабочая ветка экспериментов
 
-Для новых запусков и новых чатов используется `experiment/results-full-trajectory`.
+Для новых запусков и новых чатов используется текущий worktree
+`experiment/staged-training`.
 Начальная точка — [EXPERIMENT_CONTEXT.md](EXPERIMENT_CONTEXT.md); он связывает код,
 все отчёты, план, локальные logs и checkpoint’ы. Полный автоматически обновляемый
 инвентарь находится в [EXPERIMENT_INVENTORY.md](EXPERIMENT_INVENTORY.md).
 
 ```bash
-cd /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+cd /home/evgenii/ws/isaac/cbr_isaac_lab
 python3 scripts/experiment_inventory.py
 ```
 

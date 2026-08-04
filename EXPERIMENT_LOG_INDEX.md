@@ -1,6 +1,8 @@
 # Индекс локальных логов экспериментов
 
-Git-ветка результатов содержит этот индекс и отчёты. Сами TensorBoard events и `.pt` checkpoint-файлы хранятся локально в worktree, потому что `logs/` исключён из Git.
+Каноническая ветка `experiment/staged-training` содержит этот индекс и отчёты.
+Сами TensorBoard events и `.pt` checkpoint-файлы хранятся локально в worktree,
+потому что `logs/` исключён из Git.
 
 ## Основные staged run-директории
 

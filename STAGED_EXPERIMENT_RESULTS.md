@@ -1,7 +1,7 @@
 # Итоги staged-обучения
 
 Дата серии: 2026-08-04  
-Каноническая ветка результатов: `experiment/results-full-trajectory`  
+Каноническая ветка результатов: `experiment/staged-training`
 Supervisor: `scripts/staged_resume_experiments.py`  
 Статус supervisor: `logs/staged_resume/2026-08-04_11-09-27/status.json`
 

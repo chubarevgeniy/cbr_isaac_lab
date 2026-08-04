@@ -3,19 +3,19 @@
 Каноническая ветка с кодом, планом, отчётами и индексом результатов:
 
 ```text
-experiment/results-full-trajectory
+experiment/staged-training
 ```
 
-Её постоянный worktree:
+Каноническая рабочая ветка теперь — текущая `experiment/staged-training`, потому
+что именно этот worktree открыт для запуска и новых чатов:
 
 ```bash
-cd /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+cd /home/evgenii/ws/isaac/cbr_isaac_lab
 git branch --show-current
 ```
 
-Если ветка уже используется этим worktree, не нужно делать `git switch` из
-другого worktree: Git специально запрещает одновременно переключать одну ветку
-в двух worktree.
+`experiment/results-full-trajectory` — прежняя отдельная документационная копия;
+новые изменения нужно делать в `experiment/staged-training`.
 
 Для нового чата сначала читать [EXPERIMENT_CONTEXT.md](EXPERIMENT_CONTEXT.md), а
 затем обновлять [EXPERIMENT_INVENTORY.md](EXPERIMENT_INVENTORY.md):

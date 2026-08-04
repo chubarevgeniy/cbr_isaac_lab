@@ -3,11 +3,11 @@
 Это каноническая точка входа для новых чатов и новых запусков:
 
 ```text
-Ветка:   experiment/results-full-trajectory
-Worktree: /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+Ветка:   experiment/staged-training
+Worktree: /home/evgenii/ws/isaac/cbr_isaac_lab
 ```
 
-В этой ветке находятся одновременно:
+В этом worktree и этой ветке находятся одновременно:
 
 - код среды и PPO;
 - `scripts/staged_experiments.py` — supervisor новых staged-серий;
@@ -57,7 +57,7 @@ STAGED_EXPERIMENT_RESULTS.md
 Перед новым запуском обновить инвентарь:
 
 ```bash
-cd /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+cd /home/evgenii/ws/isaac/cbr_isaac_lab
 python3 scripts/experiment_inventory.py
 ```
 
