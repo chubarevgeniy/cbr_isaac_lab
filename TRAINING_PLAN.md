@@ -298,3 +298,21 @@ Next experiment:
 Отдельно сравнить deterministic replay. Если replay гладкий, а шум виден только в обучении, нужно исследовать exploration (`entropy`, `log_std`, learning rate). Если replay тоже дергается, регуляризация action и target-rate является правильным направлением.
 
 Эта гипотеза остаётся чистым PPO-training-from-checkpoint подходом и не вводит imitation learning или обучающие датасеты.
+
+### Поэтапное обучение без обучающих данных
+
+Для следующей ночной серии разрешено продолжать обучение с checkpoint предыдущего этапа, но каждый этап запускается новым PPO-процессом. При переходе сохраняются policy/value и running observation normalization; Adam optimizer, его moments, PPO memory и learning-rate scheduler создаются заново из конфигурации нового этапа. Это позволяет менять reward или сложность среды без переноса устаревшего состояния оптимизатора.
+
+Приоритетный шаблон этапов:
+
+1. bounded delta-action и reward `survival_clearance_speed` или `task_balanced`;
+2. полный шум/начальный tilt и `task_balanced`;
+3. `baseline` для проверки, удаётся ли после стабилизации вернуть точность speed/sit без потери lifetime.
+
+Поэтапная серия реализована в `scripts/staged_experiments.py`. Каждый этап использует `64,000` environment timesteps (`max_iterations=2000`), а следующий автоматически получает последний `agent_*.pt`. Все результаты и команды записываются в `logs/staged/<timestamp>/`.
+
+Перед запуском supervisor проверяет локальные `logs/skrl/cbr_i_ppo/` во всех worktree. Стадия считается уже выполненной, если совпадают эффективные аргументы запуска и fingerprint файлов задачи, робота и agent-конфигурации; имя эксперимента и изменения только в supervisor не учитываются. Такая стадия записывается как `skipped_duplicate`, а при наличии checkpoint следующая стадия продолжает найденный результат. Для намеренного повтора предусмотрен явный флаг `--allow-duplicate`.
+
+Для восстановления прерванной серии используется `scripts/staged_resume_experiments.py`. Он сначала возобновляет незавершённый этап с последнего checkpoint и сохраняет состояние Adam; для новых checkpoint также сохраняется состояние scheduler. После полного завершения этапа supervisor автоматически запускает следующий этап, сбрасывая optimizer/scheduler только на границе curriculum. Количество шагов resume задаётся явно, поэтому загрузка checkpoint на 25k продолжает ещё 39k, а не запускает новый полный 64k.
+
+Этот план сознательно ограничен обучением с нуля методом PPO и не включает imitation learning, residual policy или обучающие датасеты.

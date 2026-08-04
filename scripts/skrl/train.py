@@ -31,6 +31,12 @@ parser.add_argument(
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--max_timesteps",
+    type=int,
+    default=None,
+    help="Exact number of environment timesteps for this process (overrides --max_iterations).",
+)
+parser.add_argument(
     "--action_mode",
     type=str,
     default=None,
@@ -60,6 +66,37 @@ parser.add_argument(
     type=float,
     default=None,
     help="Optional upper bound for Gaussian log standard deviation.",
+)
+parser.add_argument(
+    "--disable_observation_noise",
+    action="store_true",
+    help="Disable observation noise for a curriculum warm-up stage.",
+)
+parser.add_argument(
+    "--initial_tilt_deg",
+    type=float,
+    default=None,
+    help="Initial rod-body tilt variation in degrees for a curriculum stage.",
+)
+parser.add_argument(
+    "--learning_rate",
+    type=float,
+    default=None,
+    help="Override the PPO learning rate for this stage.",
+)
+parser.add_argument(
+    "--learning_rate_min",
+    type=float,
+    default=None,
+    help="Override KLAdaptiveLR min_lr for this stage.",
+)
+parser.add_argument(
+    "--reset_optimizer_scheduler",
+    action="store_true",
+    help=(
+        "After loading a checkpoint, keep model/preprocessor weights but recreate the PPO "
+        "optimizer and learning-rate scheduler from the current stage configuration."
+    ),
 )
 parser.add_argument(
     "--experiment_label",
@@ -100,6 +137,8 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import itertools
+import math
 import numpy as np
 import os
 import random
@@ -108,6 +147,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import torch
 import skrl
 from packaging import version
 
@@ -191,6 +231,42 @@ def sanitize_run_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._-") or "unknown"
 
 
+def reset_optimizer_and_scheduler(agent) -> None:
+    """Reset PPO optimization state while preserving loaded model weights.
+
+    skrl checkpoints include policy/value preprocessors as well as the Adam
+    optimizer. A staged run retains the learned policy and normalization
+    statistics, but starts the next reward/environment stage with fresh Adam
+    moments and a fresh learning-rate scheduler.
+    """
+    if agent.policy is None or agent.value is None:
+        raise RuntimeError("Cannot reset PPO optimizer without policy and value models")
+
+    if agent.policy is agent.value:
+        parameters = agent.policy.parameters()
+    else:
+        parameters = itertools.chain(agent.policy.parameters(), agent.value.parameters())
+
+    learning_rate = agent.cfg.learning_rate
+    if isinstance(learning_rate, (list, tuple)):
+        learning_rate = learning_rate[0]
+    agent.optimizer = torch.optim.Adam(parameters, lr=float(learning_rate))
+    agent.checkpoint_modules["optimizer"] = agent.optimizer
+
+    scheduler_cfg = agent.cfg.learning_rate_scheduler
+    scheduler_cls = scheduler_cfg[0] if isinstance(scheduler_cfg, (list, tuple)) else scheduler_cfg
+    if scheduler_cls is None:
+        agent.scheduler = None
+        agent.checkpoint_modules.pop("scheduler", None)
+        return
+
+    scheduler_kwargs = agent.cfg.learning_rate_scheduler_kwargs
+    if isinstance(scheduler_kwargs, (list, tuple)):
+        scheduler_kwargs = scheduler_kwargs[0]
+    agent.scheduler = scheduler_cls(agent.optimizer, **dict(scheduler_kwargs))
+    agent.checkpoint_modules["scheduler"] = agent.scheduler
+
+
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with skrl agent."""
@@ -205,6 +281,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.action_mode = args_cli.action_mode
     if args_cli.reward_profile is not None:
         env_cfg.reward_profile = args_cli.reward_profile
+    if args_cli.disable_observation_noise:
+        env_cfg.add_noise = False
+    if args_cli.initial_tilt_deg is not None:
+        if args_cli.initial_tilt_deg < 0.0:
+            raise ValueError("--initial_tilt_deg must be non-negative")
+        env_cfg.initial_tilt_angle_variation = math.radians(args_cli.initial_tilt_deg)
     if args_cli.policy_clip_actions:
         agent_cfg["models"]["policy"]["clip_actions"] = True
         agent_cfg["models"]["policy"]["clip_mean_actions"] = True
@@ -220,12 +302,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg["models"]["policy"]["initial_log_std"] = args_cli.policy_initial_log_std
     if args_cli.policy_max_log_std is not None:
         agent_cfg["models"]["policy"]["max_log_std"] = args_cli.policy_max_log_std
+    if args_cli.learning_rate is not None:
+        if args_cli.learning_rate <= 0.0:
+            raise ValueError("--learning_rate must be positive")
+        agent_cfg["agent"]["learning_rate"] = args_cli.learning_rate
+    if args_cli.learning_rate_min is not None:
+        if args_cli.learning_rate_min <= 0.0:
+            raise ValueError("--learning_rate_min must be positive")
+        scheduler_kwargs = agent_cfg["agent"].get("learning_rate_scheduler_kwargs", {})
+        if scheduler_kwargs is None:
+            scheduler_kwargs = {}
+        scheduler_kwargs["min_lr"] = args_cli.learning_rate_min
+        agent_cfg["agent"]["learning_rate_scheduler_kwargs"] = scheduler_kwargs
 
     # multi-gpu training config
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
-    # max iterations for training
-    if args_cli.max_iterations:
+    # max timesteps for training. ``--max_timesteps`` is useful when resuming
+    # from a checkpoint because skrl starts the trainer loop at timestep zero
+    # for the new process.
+    if args_cli.max_timesteps is not None:
+        if args_cli.max_timesteps <= 0:
+            raise ValueError("--max_timesteps must be positive")
+        agent_cfg["trainer"]["timesteps"] = args_cli.max_timesteps
+    elif args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
     agent_cfg["trainer"]["close_environment_at_exit"] = False
     # configure the ML framework into the global skrl variable
@@ -314,10 +414,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     runner = Runner(env, agent_cfg)
 
+    # skrl does not register the scheduler in PPO checkpoints by default.
+    # Register it here so subsequent stage-1 resume checkpoints preserve its
+    # state just like the Adam optimizer. Older checkpoints simply omit this
+    # key and remain loadable.
+    if getattr(runner.agent, "scheduler", None) is not None:
+        runner.agent.checkpoint_modules["scheduler"] = runner.agent.scheduler
+
     # load checkpoint (if specified)
     if resume_path:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
         runner.agent.load(resume_path)
+        if args_cli.reset_optimizer_scheduler:
+            if algorithm != "ppo":
+                raise ValueError("--reset_optimizer_scheduler is currently supported only for PPO")
+            reset_optimizer_and_scheduler(runner.agent)
+            print("[INFO] Reset PPO optimizer, Adam moments, and learning-rate scheduler")
 
     # run training
     runner.run()

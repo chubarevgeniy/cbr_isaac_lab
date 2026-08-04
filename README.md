@@ -127,6 +127,22 @@ Then you can run pre-commit with:
 pre-commit run --all-files
 ```
 
+## Каноническая рабочая ветка экспериментов
+
+Для новых запусков и новых чатов используется `experiment/results-full-trajectory`.
+Начальная точка — [EXPERIMENT_CONTEXT.md](EXPERIMENT_CONTEXT.md); он связывает код,
+все отчёты, план, локальные logs и checkpoint’ы. Полный автоматически обновляемый
+инвентарь находится в [EXPERIMENT_INVENTORY.md](EXPERIMENT_INVENTORY.md).
+
+```bash
+cd /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+python3 scripts/experiment_inventory.py
+```
+
+Сами `.pt` и TensorBoard events не коммитятся, потому что это большие бинарные
+файлы. Скрипт перечисляет их по всем Git worktree, а `EXPERIMENT_LOG_INDEX.md`
+содержит ручной индекс ключевых запусков.
+
 ## Training comparison workflow
 
 The reproducible experiment protocol is documented in [TRAINING_PLAN.md](TRAINING_PLAN.md).
@@ -157,6 +173,31 @@ VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/train.
 
 Before accepting a run, verify `params/env.yaml`, `params/agent.yaml`, and `params/git.yaml`
 against the intended branch. A matching branch name alone is not sufficient provenance.
+
+### Staged overnight training
+
+The staged PPO cohort transfers policy/value weights and observation-normalization statistics
+between stages, while resetting Adam, the learning-rate scheduler, and rollout memory:
+
+```bash
+VIRTUAL_ENV=/home/evgenii/ws/isaac/env_isaaclab \
+/home/evgenii/ws/isaac/env_isaaclab/bin/python scripts/staged_experiments.py
+```
+
+Use `--prepare-only` to create the isolated worktrees without starting Isaac Sim, or
+`--dry-run` to print all stage commands. The supervisor writes its manifest, per-stage logs,
+and resumable status under `logs/staged/`. Before launching a stage it scans local worktree
+logs and compares the effective training arguments plus a fingerprint of the task, robot,
+and agent configuration. A matching clean run is recorded as `skipped_duplicate`; when it
+has a checkpoint, the next curriculum stage reuses that checkpoint. The human-readable
+`experiment_label` and supervisor-only changes do not make a run new. Use
+`--allow-duplicate` only when intentionally repeating an equivalent run.
+
+For recovering an interrupted cohort, use `scripts/staged_resume_experiments.py`. It resumes
+an incomplete stage from its latest checkpoint with the optimizer state intact, then starts
+the next stages automatically. Stage transitions intentionally reset optimizer/scheduler
+state; resume processes use exact `--max_timesteps` so they do not train an extra full 64k
+steps after loading a partial checkpoint.
 
 ### Single-factor and cross-factor experiments
 
