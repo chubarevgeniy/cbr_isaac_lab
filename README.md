@@ -156,6 +156,20 @@ VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/train.
 Before accepting a run, verify `params/env.yaml`, `params/agent.yaml`, and `params/git.yaml`
 against the intended branch. A matching branch name alone is not sufficient provenance.
 
+### Staged overnight training
+
+The staged PPO cohort transfers policy/value weights and observation-normalization statistics
+between stages, while resetting Adam, the learning-rate scheduler, and rollout memory:
+
+```bash
+VIRTUAL_ENV=/home/evgenii/ws/isaac/env_isaaclab \
+/home/evgenii/ws/isaac/env_isaaclab/bin/python scripts/staged_experiments.py
+```
+
+Use `--prepare-only` to create the isolated worktrees without starting Isaac Sim, or
+`--dry-run` to print all stage commands. The supervisor writes its manifest, per-stage logs,
+and resumable status under `logs/staged/`.
+
 ### Single-factor and cross-factor experiments
 
 Keep one-factor branches for attribution, then add cross-factor branches to measure interactions.

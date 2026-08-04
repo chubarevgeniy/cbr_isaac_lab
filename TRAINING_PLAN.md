@@ -257,3 +257,17 @@ Next experiment:
 Все восемь веток используют одинаковые `num_envs` и `64000` environment timesteps; семь идут с seed 42, а `delta-task-repeat` намеренно повторяет лучшую task-balanced гипотезу с seed 43. Два запуска одновременно разрешены после проверки VRAM. После первых 30 минут проверять не reward, а прогресс checkpoint, `Physical/termination/terminated_rate`, среднее время жизни, `Physical/walk/speed_error_abs`, `Physical/walk/mean_foot_height`, `Physical/sit/mean_joint_angle_error_abs`, `Physical/action/mean_abs_rate` и saturation fraction.
 
 Безопасное правило замены: отменять запуск только если после 30 минут он явно деградирует сразу по нескольким критериям — нет новых checkpoint/timesteps, lifetime существенно ниже baseline и termination заметно выше, либо learning rate уже на нижнем пределе при одновременно ухудшающихся speed/clearance/sit метриках. Освободившийся слот отдавать следующей ещё не запущенной bundle-ветке; отменённый run сохранять в реестре как `stopped_early` с причиной.
+
+### Поэтапное обучение без обучающих данных
+
+Для следующей ночной серии разрешено продолжать обучение с checkpoint предыдущего этапа, но каждый этап запускается новым PPO-процессом. При переходе сохраняются policy/value и running observation normalization; Adam optimizer, его moments, PPO memory и learning-rate scheduler создаются заново из конфигурации нового этапа. Это позволяет менять reward или сложность среды без переноса устаревшего состояния оптимизатора.
+
+Приоритетный шаблон этапов:
+
+1. bounded delta-action и reward `survival_clearance_speed` или `task_balanced`;
+2. полный шум/начальный tilt и `task_balanced`;
+3. `baseline` для проверки, удаётся ли после стабилизации вернуть точность speed/sit без потери lifetime.
+
+Поэтапная серия реализована в `scripts/staged_experiments.py`. Каждый этап использует `64,000` environment timesteps (`max_iterations=2000`), а следующий автоматически получает последний `agent_*.pt`. Все результаты и команды записываются в `logs/staged/<timestamp>/`.
+
+Этот план сознательно ограничен обучением с нуля методом PPO и не включает imitation learning, residual policy или обучающие датасеты.
