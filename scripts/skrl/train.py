@@ -31,6 +31,12 @@ parser.add_argument(
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--max_timesteps",
+    type=int,
+    default=None,
+    help="Exact number of environment timesteps for this process (overrides --max_iterations).",
+)
+parser.add_argument(
     "--action_mode",
     type=str,
     default=None,
@@ -251,12 +257,14 @@ def reset_optimizer_and_scheduler(agent) -> None:
     scheduler_cls = scheduler_cfg[0] if isinstance(scheduler_cfg, (list, tuple)) else scheduler_cfg
     if scheduler_cls is None:
         agent.scheduler = None
+        agent.checkpoint_modules.pop("scheduler", None)
         return
 
     scheduler_kwargs = agent.cfg.learning_rate_scheduler_kwargs
     if isinstance(scheduler_kwargs, (list, tuple)):
         scheduler_kwargs = scheduler_kwargs[0]
     agent.scheduler = scheduler_cls(agent.optimizer, **dict(scheduler_kwargs))
+    agent.checkpoint_modules["scheduler"] = agent.scheduler
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -310,8 +318,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # multi-gpu training config
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
-    # max iterations for training
-    if args_cli.max_iterations:
+    # max timesteps for training. ``--max_timesteps`` is useful when resuming
+    # from a checkpoint because skrl starts the trainer loop at timestep zero
+    # for the new process.
+    if args_cli.max_timesteps is not None:
+        if args_cli.max_timesteps <= 0:
+            raise ValueError("--max_timesteps must be positive")
+        agent_cfg["trainer"]["timesteps"] = args_cli.max_timesteps
+    elif args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
     agent_cfg["trainer"]["close_environment_at_exit"] = False
     # configure the ML framework into the global skrl variable
@@ -399,6 +413,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     runner = Runner(env, agent_cfg)
+
+    # skrl does not register the scheduler in PPO checkpoints by default.
+    # Register it here so subsequent stage-1 resume checkpoints preserve its
+    # state just like the Adam optimizer. Older checkpoints simply omit this
+    # key and remain loadable.
+    if getattr(runner.agent, "scheduler", None) is not None:
+        runner.agent.checkpoint_modules["scheduler"] = runner.agent.scheduler
 
     # load checkpoint (if specified)
     if resume_path:
