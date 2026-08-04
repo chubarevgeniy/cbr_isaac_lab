@@ -258,6 +258,47 @@ Next experiment:
 
 Безопасное правило замены: отменять запуск только если после 30 минут он явно деградирует сразу по нескольким критериям — нет новых checkpoint/timesteps, lifetime существенно ниже baseline и termination заметно выше, либо learning rate уже на нижнем пределе при одновременно ухудшающихся speed/clearance/sit метриках. Освободившийся слот отдавать следующей ещё не запущенной bundle-ветке; отменённый run сохранять в реестре как `stopped_early` с причиной.
 
+## Результаты staged-серии и решения
+
+Полный отчет по staged-когорте 2026-08-04 находится в [STAGED_EXPERIMENT_RESULTS.md](STAGED_EXPERIMENT_RESULTS.md), а единый индекс локальных TensorBoard logs — в [EXPERIMENT_LOG_INDEX.md](EXPERIMENT_LOG_INDEX.md).
+
+### Подтверждено как рабочее
+
+- Передача policy/value и observation normalization через checkpoint между стадиями работает.
+- Resume незавершенного этапа с точным количеством оставшихся timesteps работает без сброса optimizer/scheduler.
+- Deduplication предотвращает повтор эквивалентной чистой стадии; найденный полный `delta-task-repeat` корректно заменил дубликат `staged-control/task-1`.
+- Наилучший результат дала последовательность `staged-control` с `task_balanced` на всех стадиях: финальный lifetime около `821`, termination около `0.00065`.
+
+### Не принимать как готовые решения
+
+- Резкий переход `task_balanced -> baseline` на последней стадии: у `reward-curriculum` и `easy-to-robust` lifetime резко упал.
+- Easy-pretraining как единственную curriculum-стратегию: оно улучшило sit/clearance, но не гарантировало устойчивую ходьбу.
+- Вывод по одному 64k run и одному seed: перед выбором production-кандидата нужны длинный протокол и дополнительные seed.
+
+## Следующая серия: длинный baseline и регуляризация действий
+
+### Длинный baseline
+
+Сначала запустить текущую baseline-конфигурацию без curriculum на `800000` environment timesteps (`max_iterations=25000`, `num_envs=2048`, seed 42). Это проверит, что 64k-результат не является случайным tail-эффектом, и даст честную точку сравнения для staged-кандидата. После него продлить `task_balanced`/`staged-control` на том же протоколе.
+
+### Curriculum для шумных delta-actions
+
+Гипотеза: сначала policy должна научиться ходить и выполнять sit/stand, а затем можно усиливать штраф за большие действия, не заставляя policy искать locomotion и экономичность одновременно.
+
+Важно: штраф величины действия уже существует в `compute_rewards` как `-0.00001 * ||action||²`; в `task_balanced` также есть штраф изменения действия с коэффициентом `0.0015`. Поэтому следующий эксперимент должен сначала вынести коэффициенты в `EnvCfg`, а не добавлять второй hardcoded penalty.
+
+План проверки:
+
+1. **Locomotion stage:** `delta` + `task_balanced`, полный текущий noise/tilt, слабый текущий `action_magnitude_scale`. Цель — lifetime, speed tracking и sit/stand.
+2. **Regularized stage:** загрузить checkpoint locomotion stage, сохранить survival/speed/sit/clearance reward и увеличить только `action_magnitude_scale`; не заменять reward на `baseline`.
+3. **Smooth transition:** проверить линейный ramp коэффициента за `16k–32k` шагов, чтобы избежать catastrophic forgetting.
+
+Для screening использовать одинаковый checkpoint и seed с `lambda_action ∈ {5e-5, 1e-4}`. Собирать `Physical/action/mean_abs`, `mean_abs_rate`, `saturation_fraction`, `Physical/target/mean_abs_step`, lifetime, termination, speed error и sit error. Успех: action magnitude/rate ниже минимум на 20%, lifetime не хуже более чем на 10%, speed error не хуже более чем на 10%.
+
+Отдельно сравнить deterministic replay. Если replay гладкий, а шум виден только в обучении, нужно исследовать exploration (`entropy`, `log_std`, learning rate). Если replay тоже дергается, регуляризация action и target-rate является правильным направлением.
+
+Эта гипотеза остаётся чистым PPO-training-from-checkpoint подходом и не вводит imitation learning или обучающие датасеты.
+
 ### Поэтапное обучение без обучающих данных
 
 Для следующей ночной серии разрешено продолжать обучение с checkpoint предыдущего этапа, но каждый этап запускается новым PPO-процессом. При переходе сохраняются policy/value и running observation normalization; Adam optimizer, его moments, PPO memory и learning-rate scheduler создаются заново из конфигурации нового этапа. Это позволяет менять reward или сложность среды без переноса устаревшего состояния оптимизатора.

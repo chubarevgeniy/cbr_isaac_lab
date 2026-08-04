@@ -1,15 +1,27 @@
 # Индекс экспериментов
 
-Каноническая ветка с документацией результатов:
+Каноническая ветка с кодом, планом, отчётами и индексом результатов:
 
 ```text
 experiment/results-full-trajectory
 ```
 
-Переключение:
+Её постоянный worktree:
 
 ```bash
-git switch experiment/results-full-trajectory
+cd /home/evgenii/ws/isaac/cbr_i_results_full_trajectory
+git branch --show-current
+```
+
+Если ветка уже используется этим worktree, не нужно делать `git switch` из
+другого worktree: Git специально запрещает одновременно переключать одну ветку
+в двух worktree.
+
+Для нового чата сначала читать [EXPERIMENT_CONTEXT.md](EXPERIMENT_CONTEXT.md), а
+затем обновлять [EXPERIMENT_INVENTORY.md](EXPERIMENT_INVENTORY.md):
+
+```bash
+python3 scripts/experiment_inventory.py
 ```
 
 ## Отчёты
@@ -17,6 +29,8 @@ git switch experiment/results-full-trajectory
 - [Предыдущий screening на 32k environment timesteps](EXPERIMENT_RESULTS.md)
 - [Ночная серия hypothesis bundles на 64k environment timesteps](OVERNIGHT_EXPERIMENT_RESULTS.md)
 - [Общий план и правила запуска](TRAINING_PLAN.md)
+- [Единый контекст для нового чата](EXPERIMENT_CONTEXT.md)
+- [Полный локальный инвентарь checkpoint’ов и TensorBoard](EXPERIMENT_INVENTORY.md)
 
 ## Локальные артефакты
 
