@@ -302,6 +302,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.learning_rate_min <= 0.0:
             raise ValueError("--learning_rate_min must be positive")
         scheduler_kwargs = agent_cfg["agent"].get("learning_rate_scheduler_kwargs", {})
+        if scheduler_kwargs is None:
+            scheduler_kwargs = {}
         scheduler_kwargs["min_lr"] = args_cli.learning_rate_min
         agent_cfg["agent"]["learning_rate_scheduler_kwargs"] = scheduler_kwargs
 
