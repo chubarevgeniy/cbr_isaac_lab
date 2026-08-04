@@ -197,6 +197,8 @@ def plan_stage(
     fingerprint: str,
     runs: list[ExistingRun],
     allow_duplicate: bool,
+    skip_incomplete_stage1: bool = False,
+    retry_uncheckpointed: bool = False,
 ) -> tuple[StageAction | None, ExistingRun | None, str]:
     """Plan one stage.
 
@@ -207,7 +209,12 @@ def plan_stage(
     stage_index = identity.stage_index
     reset_for_new_stage = stage_index > 0
 
-    if stage_index == 0 and input_checkpoint is None and not allow_duplicate:
+    if (
+        stage_index == 0
+        and input_checkpoint is None
+        and not allow_duplicate
+        and not skip_incomplete_stage1
+    ):
         incomplete = current_incomplete_stage1(identity, fingerprint, runs)
         if incomplete is not None:
             remaining = TARGET_STEPS - incomplete.checkpoint_step
@@ -246,7 +253,7 @@ def plan_stage(
                     None,
                     "resume existing stage-1 resume process",
                 )
-            if resumed_runs and not allow_duplicate:
+            if resumed_runs and not allow_duplicate and not retry_uncheckpointed:
                 return None, max(resumed_runs, key=lambda run: run.run_dir.stat().st_mtime), "equivalent stage-1 resume has no checkpoint"
 
             return (
@@ -296,7 +303,7 @@ def plan_stage(
             "resume matching incomplete run",
         )
 
-    if candidates and not allow_duplicate:
+    if candidates and not allow_duplicate and not retry_uncheckpointed:
         # A process with no checkpoint may still be running. Do not launch a
         # second equivalent process merely because the first one has not
         # reached its first checkpoint yet.
@@ -441,6 +448,18 @@ def main() -> int:
         action="store_true",
         help="Disable completed-run deduplication; incomplete runs are still resumed when possible.",
     )
+    parser.add_argument(
+        "--skip-incomplete-stage1",
+        action="append",
+        default=[],
+        metavar="VARIANT",
+        help="Reuse a completed equivalent stage1 for this variant instead of resuming its partial run.",
+    )
+    parser.add_argument(
+        "--retry-uncheckpointed",
+        action="store_true",
+        help="Ignore matching runs with no checkpoint; use only after stopping their processes intentionally.",
+    )
     args = parser.parse_args()
 
     if not ISAACLAB.joinpath("isaaclab.sh").exists():
@@ -468,6 +487,8 @@ def main() -> int:
         "rollouts_per_iteration": ROLLOUTS_PER_ITERATION,
         "max_concurrent": max(1, args.max_concurrent),
         "deduplication_enabled": not args.allow_duplicate,
+        "skip_incomplete_stage1": args.skip_incomplete_stage1,
+        "retry_uncheckpointed": args.retry_uncheckpointed,
         "fingerprint_roots": list(TRAINING_FINGERPRINT_ROOTS),
         "training_fingerprints": fingerprints,
         "variants": {
@@ -504,6 +525,8 @@ def main() -> int:
             fingerprint=fingerprints[variant.name],
             runs=existing_runs(),
             allow_duplicate=args.allow_duplicate,
+            skip_incomplete_stage1=variant.name in args.skip_incomplete_stage1,
+            retry_uncheckpointed=args.retry_uncheckpointed,
         )
         if reused is not None:
             finished[variant.name].append(reused_record(identity, reused, reason))
@@ -527,6 +550,8 @@ def main() -> int:
             fingerprint=fingerprints[variant.name],
             runs=runs,
             allow_duplicate=args.allow_duplicate,
+            skip_incomplete_stage1=variant.name in args.skip_incomplete_stage1,
+            retry_uncheckpointed=args.retry_uncheckpointed,
         )
         if reused is not None:
             finished[variant.name].append(reused_record(identity, reused, reason))
