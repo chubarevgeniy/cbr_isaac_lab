@@ -521,7 +521,7 @@ def main() -> int:
             action = queue.pop(0)
             if action.variant.name in failed_variants:
                 continue
-            stdout_path = state_root / f"{action.variant.name}__{action.stage.name}.stdout.log"
+            stdout_path = state_root / f"{action.variant.name}__{action.identity.stage.name}.stdout.log"
             environment = os.environ.copy()
             environment["VIRTUAL_ENV"] = str(VIRTUAL_ENV)
             environment["PYTHONUNBUFFERED"] = "1"
