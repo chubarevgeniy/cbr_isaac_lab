@@ -104,8 +104,11 @@ class ActiveRun:
         return self.identity.variant
 
 
-def run_is_complete(run: ExistingRun) -> bool:
-    return run.checkpoint_step >= COMPLETION_CHECKPOINT
+def run_is_complete(run: ExistingRun, requested_timesteps: int | None = None) -> bool:
+    requested = requested_timesteps
+    if requested is None:
+        requested = run.signature.get("timesteps") or TARGET_STEPS
+    return run.checkpoint_step >= max(1, int(requested) - CHECKPOINT_INTERVAL)
 
 
 def run_in_worktree(run: ExistingRun, worktree: Path) -> bool:
@@ -208,6 +211,44 @@ def plan_stage(
         incomplete = current_incomplete_stage1(identity, fingerprint, runs)
         if incomplete is not None:
             remaining = TARGET_STEPS - incomplete.checkpoint_step
+
+            # If this supervisor is restarted after it already spawned the
+            # resume process, continue that process's checkpoint instead of
+            # starting a second resume from the older stage-1 checkpoint.
+            resumed_runs = matching_runs(
+                identity,
+                incomplete.checkpoint,
+                timesteps=remaining,
+                reset_optimizer_scheduler=False,
+                fingerprint=fingerprint,
+                runs=runs,
+            )
+            resumed_completed = best_completed(resumed_runs)
+            if resumed_completed is not None:
+                return None, resumed_completed, "reuse completed stage-1 resume"
+            resumed_partial = max(
+                [run for run in resumed_runs if run.checkpoint is not None and not run_is_complete(run)],
+                key=lambda run: (run.checkpoint_step, run.run_dir.stat().st_mtime),
+                default=None,
+            )
+            if resumed_partial is not None:
+                remaining_after_resume = remaining - resumed_partial.checkpoint_step
+                return (
+                    StageAction(
+                        identity=identity,
+                        input_checkpoint=resumed_partial.checkpoint,
+                        timesteps=remaining_after_resume,
+                        reset_optimizer_scheduler=False,
+                        mode="resume_stage1_again",
+                        source_run=resumed_partial.run_dir,
+                        resume_from_step=incomplete.checkpoint_step + resumed_partial.checkpoint_step,
+                    ),
+                    None,
+                    "resume existing stage-1 resume process",
+                )
+            if resumed_runs and not allow_duplicate:
+                return None, max(resumed_runs, key=lambda run: run.run_dir.stat().st_mtime), "equivalent stage-1 resume has no checkpoint"
+
             return (
                 StageAction(
                     identity=identity,
@@ -254,6 +295,12 @@ def plan_stage(
             None,
             "resume matching incomplete run",
         )
+
+    if candidates and not allow_duplicate:
+        # A process with no checkpoint may still be running. Do not launch a
+        # second equivalent process merely because the first one has not
+        # reached its first checkpoint yet.
+        return None, max(candidates, key=lambda run: run.run_dir.stat().st_mtime), "equivalent run has no checkpoint"
 
     return (
         StageAction(
