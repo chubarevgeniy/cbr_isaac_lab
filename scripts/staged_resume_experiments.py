@@ -583,6 +583,8 @@ def main() -> int:
         nonlocal stop_requested
         stop_requested = True
         queue.clear()
+        for active in list(running.values()):
+            stop_process(active, f"supervisor received signal {signum}")
         print(f"[resume-staged] received signal {signum}; stopping active runs", flush=True)
 
     signal.signal(signal.SIGTERM, handle_signal)
