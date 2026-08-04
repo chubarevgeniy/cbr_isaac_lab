@@ -68,6 +68,18 @@ parser.add_argument(
     help="Optional upper bound for Gaussian log standard deviation.",
 )
 parser.add_argument(
+    "--action_magnitude_scale",
+    type=float,
+    default=None,
+    help="Override the raw-action magnitude penalty coefficient in the reward.",
+)
+parser.add_argument(
+    "--action_rate_scale",
+    type=float,
+    default=None,
+    help="Override the raw-action rate penalty coefficient in the reward.",
+)
+parser.add_argument(
     "--disable_observation_noise",
     action="store_true",
     help="Disable observation noise for a curriculum warm-up stage.",
@@ -302,6 +314,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg["models"]["policy"]["initial_log_std"] = args_cli.policy_initial_log_std
     if args_cli.policy_max_log_std is not None:
         agent_cfg["models"]["policy"]["max_log_std"] = args_cli.policy_max_log_std
+    if args_cli.action_magnitude_scale is not None:
+        if args_cli.action_magnitude_scale < 0.0:
+            raise ValueError("--action_magnitude_scale must be non-negative")
+        env_cfg.action_magnitude_scale = args_cli.action_magnitude_scale
+    if args_cli.action_rate_scale is not None:
+        if args_cli.action_rate_scale < 0.0:
+            raise ValueError("--action_rate_scale must be non-negative")
+        env_cfg.action_rate_scale_override = args_cli.action_rate_scale
     if args_cli.learning_rate is not None:
         if args_cli.learning_rate <= 0.0:
             raise ValueError("--learning_rate must be positive")

@@ -496,6 +496,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             actions=self.actions,
             action_delta=self.actions - self.previous_actions,
             reward_profile=self.reward_profile_id,
+            action_magnitude_scale=self.cfg.action_magnitude_scale,
+            action_rate_scale_override=self.cfg.action_rate_scale_override,
         )
 
         self.extras.pop("log", None)
@@ -867,6 +869,8 @@ def compute_rewards(
     actions: torch.Tensor,
     action_delta: torch.Tensor,
     reward_profile: int,
+    action_magnitude_scale: float,
+    action_rate_scale_override: float,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
@@ -903,6 +907,9 @@ def compute_rewards(
         clearance_scale = 0.10
         action_rate_scale = 0.0015
         sit_scale = 0.85
+
+    if action_rate_scale_override >= 0.0:
+        action_rate_scale = action_rate_scale_override
 
     termination_penalty = reset_terminated.float() * -termination_scale
     alive_reward = (1.0 - reset_terminated.float()) * alive_scale
@@ -956,7 +963,7 @@ def compute_rewards(
     sit_reward += (left_knee_angle-124.0 * torch.pi / 180.0 * 0.99).abs().squeeze(dim=-1) * -0.1
 
     # Penalty for action magnitude (energy/effort)
-    action_penalty = torch.sum(actions ** 2, dim=-1) * -0.00001
+    action_penalty = torch.sum(actions ** 2, dim=-1) * -action_magnitude_scale
 
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward * sit_scale, walk_reward)

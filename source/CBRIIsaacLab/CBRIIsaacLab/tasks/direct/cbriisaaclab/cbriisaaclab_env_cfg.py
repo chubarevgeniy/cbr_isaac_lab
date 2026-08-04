@@ -119,6 +119,15 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     rew_scale_alive = 1.0
     # "baseline" preserves the reward used by the 32k-step screening runs.
     reward_profile = "baseline"
+    # The action penalty is applied to the raw policy action before the
+    # environment-side delta clamp.  Keep the historical value by default,
+    # while allowing action-regularization experiments to override it from
+    # the command line.
+    action_magnitude_scale = 0.00001
+    # A negative value means "use the reward profile default".  This keeps
+    # task_balanced at 0.0015 while allowing baseline/rate-only experiments to
+    # set an explicit raw action-rate penalty.
+    action_rate_scale_override = -1.0
     # - reset states/conditions
     termination_rod_angle = 8.9 * math.pi / 180.0
     termination_head_height = 0.1
