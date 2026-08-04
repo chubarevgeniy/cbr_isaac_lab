@@ -130,6 +130,8 @@ pre-commit run --all-files
 ## Training comparison workflow
 
 The reproducible experiment protocol is documented in [TRAINING_PLAN.md](TRAINING_PLAN.md).
+The staged cohort report is in [STAGED_EXPERIMENT_RESULTS.md](STAGED_EXPERIMENT_RESULTS.md), with
+the local TensorBoard log index in [EXPERIMENT_LOG_INDEX.md](EXPERIMENT_LOG_INDEX.md).
 The quick comparison uses a fixed seed, environment count, and `32,000` environment steps:
 
 ```bash
