@@ -492,6 +492,21 @@ def main() -> int:
             (initial_actions if action.identity.stage_index == 0 else later_actions).append(action)
     queue = initial_actions + later_actions
 
+    if args.dry_run:
+        for variant, records in finished.items():
+            for record in records:
+                print(
+                    f"[resume-staged] {variant}/{record['stage']} "
+                    f"{record['status']} {record.get('run_dir', '')}"
+                )
+        for action in queue:
+            print(
+                f"[resume-staged] {action.name} mode={action.mode} "
+                f"timesteps={action.timesteps} checkpoint={action.input_checkpoint or 'none'}"
+            )
+            print(" ", " ".join(command_for(action)))
+        return 0
+
     def handle_signal(signum: int, _frame: Any) -> None:
         nonlocal stop_requested
         stop_requested = True
