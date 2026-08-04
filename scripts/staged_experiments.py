@@ -15,6 +15,7 @@ wave, so the cohort is expected to finish in roughly nine hours.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -23,8 +24,11 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from overnight_experiments import (
     BASELINE,
@@ -42,8 +46,59 @@ VIRTUAL_ENV = Path("/home/evgenii/ws/isaac/env_isaaclab")
 TASK = "Template-Cbriisaaclab-Direct-v0"
 NUM_ENVS = 2048
 MAX_ITERATIONS = 2000  # 2000 * rollouts(32) = 64,000 environment timesteps
+ROLLOUTS_PER_ITERATION = 32
+TARGET_STEPS = MAX_ITERATIONS * ROLLOUTS_PER_ITERATION
 MAX_CONCURRENT = 2
 EARLY_STOP_AFTER = 30 * 60
+
+# These files describe the task/robot/agent behavior. Experiment orchestration
+# and documentation files are intentionally excluded: changing the supervisor
+# must not make an unchanged training hypothesis look like a new experiment.
+TRAINING_FINGERPRINT_ROOTS = (
+    "source/CBRIIsaacLab/CBRIIsaacLab/tasks/direct/cbriisaaclab",
+    "source/CBRIIsaacLab/CBRIIsaacLab/robots",
+)
+
+SIGNATURE_DEFAULTS: dict[str, Any] = {
+    "distributed": False,
+    "checkpoint": None,
+    "policy_clip_actions": False,
+    "policy_initial_log_std": None,
+    "policy_max_log_std": None,
+    "disable_observation_noise": False,
+    "initial_tilt_deg": None,
+    "learning_rate": None,
+    "learning_rate_min": None,
+    "reset_optimizer_scheduler": False,
+    "ml_framework": "torch",
+    "algorithm": "PPO",
+}
+SIGNATURE_KEYS = (
+    "task",
+    "num_envs",
+    "max_iterations",
+    "seed",
+    "distributed",
+    "checkpoint",
+    "action_mode",
+    "reward_profile",
+    "policy_clip_actions",
+    "policy_initial_log_std",
+    "policy_max_log_std",
+    "disable_observation_noise",
+    "initial_tilt_deg",
+    "learning_rate",
+    "learning_rate_min",
+    "reset_optimizer_scheduler",
+    "ml_framework",
+    "algorithm",
+)
+BOOL_SIGNATURE_KEYS = {
+    "distributed",
+    "policy_clip_actions",
+    "disable_observation_noise",
+    "reset_optimizer_scheduler",
+}
 
 
 @dataclass(frozen=True)
@@ -78,6 +133,15 @@ class StageIdentity:
         return f"{self.variant.name}/{self.stage.name}"
 
 
+@dataclass(frozen=True)
+class ExistingRun:
+    run_dir: Path
+    checkpoint: Path | None
+    checkpoint_step: int
+    fingerprint: str
+    signature: dict[str, Any]
+
+
 @dataclass
 class Running:
     identity: StageIdentity
@@ -89,6 +153,7 @@ class Running:
     last_checkpoint_mtime: float = 0.0
     run_dir: Path | None = None
     stopped_reason: str | None = None
+    input_checkpoint: Path | None = None
 
     @property
     def variant(self) -> Variant:
@@ -141,6 +206,104 @@ def run_git(*args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+
+def _git_output(*args: str) -> str | None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+@lru_cache(maxsize=None)
+def training_fingerprint(commit: str) -> str | None:
+    """Hash task behavior files at a recorded git commit.
+
+    The experiment supervisor and train CLI are deliberately not included:
+    their additions can provide new controls without changing a run that did
+    not use those controls. The resolved launch arguments below capture the
+    controls that were actually enabled for each run.
+    """
+    path_listing = _git_output("ls-tree", "-r", "--name-only", commit, "--", *TRAINING_FINGERPRINT_ROOTS)
+    if path_listing is None:
+        return None
+
+    digest = hashlib.sha256()
+    paths = [path for path in path_listing.splitlines() if path]
+    for path in paths:
+        blob = subprocess.run(
+            ["git", "show", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if blob.returncode != 0:
+            return None
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(blob.stdout)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def normalize_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def normalize_checkpoint(value: Any) -> str | None:
+    if value in (None, "", "null"):
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path.resolve())
+
+
+def launch_signature(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return only effective experiment controls, ignoring run labels."""
+    signature: dict[str, Any] = {}
+    for key in SIGNATURE_KEYS:
+        value = arguments.get(key, SIGNATURE_DEFAULTS.get(key))
+        if key in BOOL_SIGNATURE_KEYS:
+            value = normalize_bool(value)
+        elif key == "checkpoint":
+            value = normalize_checkpoint(value)
+        signature[key] = value
+    return signature
+
+
+def expected_launch_signature(identity: StageIdentity, checkpoint: Path | None) -> dict[str, Any]:
+    stage = identity.stage
+    variant = identity.variant
+    return launch_signature(
+        {
+            "task": TASK,
+            "num_envs": NUM_ENVS,
+            "max_iterations": MAX_ITERATIONS,
+            "seed": variant.seed,
+            "distributed": False,
+            "checkpoint": checkpoint,
+            "action_mode": variant.action_mode,
+            "reward_profile": stage.reward_profile,
+            "policy_clip_actions": True,
+            "policy_initial_log_std": -0.7,
+            "policy_max_log_std": 0.0,
+            "disable_observation_noise": stage.disable_observation_noise,
+            "initial_tilt_deg": stage.initial_tilt_deg,
+            "learning_rate": None,
+            "learning_rate_min": None,
+            "reset_optimizer_scheduler": checkpoint is not None,
+            "ml_framework": "torch",
+            "algorithm": "PPO",
+        }
+    )
 
 
 def prepare_worktree(variant: Variant, base_commit: str) -> None:
@@ -237,6 +400,76 @@ def checkpoint_path(run_dir: Path | None) -> Path | None:
     return max(checkpoints, default=(0, None))[1]
 
 
+def experiment_log_roots() -> list[Path]:
+    roots = [ROOT / "logs" / "skrl" / "cbr_i_ppo"]
+    roots.extend(ROOT.parent.glob("cbr_i_*/logs/skrl/cbr_i_ppo"))
+    unique: dict[str, Path] = {}
+    for root in roots:
+        if root.exists():
+            unique[str(root.resolve())] = root
+    return sorted(unique.values(), key=str)
+
+
+def existing_runs() -> list[ExistingRun]:
+    """Read prior clean runs from this repository's local worktrees."""
+    discovered: list[ExistingRun] = []
+    for root in experiment_log_roots():
+        for launch_path in sorted(root.glob("*/params/launch.yaml")):
+            run_dir = launch_path.parent.parent
+            git_path = run_dir / "params" / "git.yaml"
+            try:
+                launch_data = yaml.safe_load(launch_path.read_text(encoding="utf-8")) or {}
+                git_data = yaml.safe_load(git_path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+
+            if not isinstance(launch_data, dict) or not isinstance(git_data, dict):
+                continue
+            arguments = launch_data.get("argparse", {})
+            if not isinstance(arguments, dict):
+                continue
+            if git_data.get("dirty_files"):
+                # A dirty run may contain uncommitted task changes that are not
+                # represented by its commit hash, so it is not safe to match.
+                continue
+            commit = git_data.get("commit")
+            if not isinstance(commit, str) or not commit:
+                continue
+            fingerprint = training_fingerprint(commit)
+            if fingerprint is None:
+                continue
+            checkpoint = checkpoint_path(run_dir)
+            checkpoint_step, _ = checkpoint_state(run_dir)
+            discovered.append(
+                ExistingRun(
+                    run_dir=run_dir,
+                    checkpoint=checkpoint,
+                    checkpoint_step=checkpoint_step,
+                    fingerprint=fingerprint,
+                    signature=launch_signature(arguments),
+                )
+            )
+    return discovered
+
+
+def find_duplicate(
+    identity: StageIdentity,
+    checkpoint: Path | None,
+    fingerprint: str,
+) -> ExistingRun | None:
+    expected = expected_launch_signature(identity, checkpoint)
+    matches = [
+        run
+        for run in existing_runs()
+        if run.fingerprint == fingerprint and run.signature == expected
+    ]
+    if not matches:
+        return None
+    # Prefer the run with the most progress, then the newest directory. This
+    # matters when an interrupted duplicate and a completed duplicate coexist.
+    return max(matches, key=lambda run: (run.checkpoint_step, run.run_dir.stat().st_mtime))
+
+
 def obvious_failure(running: Running, snapshot: dict[str, Any]) -> str | None:
     """Stop only clear multi-signal failures, preserving partial checkpoints."""
     age = time.time() - running.started_at
@@ -314,6 +547,7 @@ def stage_record(
     running: Running,
     returncode: int | None,
     status: str,
+    duplicate_of: Path | None = None,
 ) -> dict[str, Any]:
     return {
         "stage": running.identity.stage.name,
@@ -325,10 +559,37 @@ def stage_record(
         "seed": running.identity.variant.seed,
         "run_dir": str(running.run_dir) if running.run_dir else None,
         "stdout": str(running.stdout_path),
+        "input_checkpoint": str(running.input_checkpoint) if running.input_checkpoint else None,
         "last_checkpoint": running.last_checkpoint,
         "returncode": returncode,
         "status": status,
         "stopped_reason": running.stopped_reason,
+        "duplicate_of": str(duplicate_of) if duplicate_of else None,
+        "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+def skipped_duplicate_record(
+    identity: StageIdentity,
+    duplicate: ExistingRun,
+    checkpoint: Path | None,
+) -> dict[str, Any]:
+    return {
+        "stage": identity.stage.name,
+        "stage_index": identity.stage_index,
+        "reward_profile": identity.stage.reward_profile,
+        "disable_observation_noise": identity.stage.disable_observation_noise,
+        "initial_tilt_deg": identity.stage.initial_tilt_deg,
+        "branch": identity.variant.branch,
+        "seed": identity.variant.seed,
+        "run_dir": None,
+        "stdout": None,
+        "input_checkpoint": str(checkpoint) if checkpoint else None,
+        "last_checkpoint": duplicate.checkpoint_step,
+        "returncode": None,
+        "status": "skipped_duplicate",
+        "stopped_reason": None,
+        "duplicate_of": str(duplicate.run_dir),
         "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
@@ -338,6 +599,11 @@ def main() -> int:
     parser.add_argument("--max-concurrent", type=int, default=MAX_CONCURRENT)
     parser.add_argument("--dry-run", action="store_true", help="Prepare worktrees and print all stage commands.")
     parser.add_argument("--prepare-only", action="store_true", help="Create worktrees without starting training.")
+    parser.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help="Run a stage even when an equivalent clean run already exists locally.",
+    )
     args = parser.parse_args()
 
     if not ISAACLAB.joinpath("isaaclab.sh").exists():
@@ -349,6 +615,16 @@ def main() -> int:
     for variant in VARIANTS:
         prepare_worktree(variant, base_commit)
 
+    variant_fingerprints: dict[str, str] = {}
+    for variant in VARIANTS:
+        worktree_commit = run_git("-C", str(variant.worktree), "rev-parse", "HEAD")
+        fingerprint = training_fingerprint(worktree_commit)
+        if fingerprint is None:
+            raise SystemExit(
+                f"Could not fingerprint training files for {variant.name} at {worktree_commit}"
+            )
+        variant_fingerprints[variant.name] = fingerprint
+
     if args.prepare_only:
         print(f"[staged] prepared {len(VARIANTS)} worktrees at base {base_commit}")
         return 0
@@ -359,6 +635,16 @@ def main() -> int:
     status_path = state_root / "status.json"
 
     manifest: dict[str, Any] = {
+        "deduplication": {
+            "enabled": not args.allow_duplicate,
+            "allow_duplicate_override": "--allow-duplicate",
+            "target_steps": TARGET_STEPS,
+            "training_fingerprints": variant_fingerprints,
+            "fingerprint_roots": list(TRAINING_FINGERPRINT_ROOTS),
+            "ignored_launch_field": "experiment_label",
+        }
+    }
+    manifest.update({
         variant.name: {
             "branch": variant.branch,
             "worktree": str(variant.worktree),
@@ -375,7 +661,7 @@ def main() -> int:
             ],
         }
         for variant in VARIANTS
-    }
+    })
     (state_root / "commands.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     if args.dry_run:
@@ -393,6 +679,7 @@ def main() -> int:
     finished: dict[str, list[dict[str, Any]]] = {variant.name: [] for variant in VARIANTS}
     latest_checkpoints: dict[str, Path] = {}
     failed_variants: set[str] = set()
+    blocked_variants: set[str] = set()
     stop_requested = False
 
     def handle_signal(signum: int, _frame: Any) -> None:
@@ -410,9 +697,40 @@ def main() -> int:
 
         while not stop_requested and queue and len(running) < max(1, args.max_concurrent):
             identity = queue.pop(0)
-            if identity.variant.name in failed_variants:
+            if identity.variant.name in failed_variants or identity.variant.name in blocked_variants:
                 continue
             checkpoint = latest_checkpoints.get(identity.variant.name)
+
+            if not args.allow_duplicate:
+                duplicate = find_duplicate(
+                    identity,
+                    checkpoint,
+                    variant_fingerprints[identity.variant.name],
+                )
+                if duplicate is not None:
+                    finished[identity.variant.name].append(
+                        skipped_duplicate_record(identity, duplicate, checkpoint)
+                    )
+                    print(
+                        f"[staged] skipped {identity.name}: duplicate of {duplicate.run_dir} "
+                        f"(checkpoint={duplicate.checkpoint_step or 'none'})",
+                        flush=True,
+                    )
+                    if duplicate.checkpoint is not None:
+                        latest_checkpoints[identity.variant.name] = duplicate.checkpoint
+                        next_index = identity.stage_index + 1
+                        stages = identity.variant.stages
+                        if next_index < len(stages) and not stop_requested:
+                            queue.append(StageIdentity(identity.variant, stages[next_index], next_index))
+                    else:
+                        blocked_variants.add(identity.variant.name)
+                        print(
+                            f"[staged] blocked {identity.variant.name}: duplicate has no checkpoint; "
+                            "use --allow-duplicate to retry intentionally",
+                            flush=True,
+                        )
+                    continue
+
             stdout_path = state_root / f"{identity.variant.name}__{identity.stage.name}.stdout.log"
             stdout = stdout_path.open("w", encoding="utf-8")
             environment = os.environ.copy()
@@ -430,7 +748,13 @@ def main() -> int:
                 start_new_session=True,
             )
             stdout.close()
-            running[identity.name] = Running(identity, process, stdout_path, time.time())
+            running[identity.name] = Running(
+                identity,
+                process,
+                stdout_path,
+                time.time(),
+                input_checkpoint=checkpoint,
+            )
             print(
                 f"[staged] launched {identity.name} pid={process.pid} "
                 f"checkpoint={checkpoint or 'none'}",
@@ -489,6 +813,11 @@ def main() -> int:
             },
             "finished": finished,
             "failed_variants": sorted(failed_variants),
+            "blocked_variants": sorted(blocked_variants),
+            "deduplication": {
+                "enabled": not args.allow_duplicate,
+                "training_fingerprints": variant_fingerprints,
+            },
         }
         write_status(status_path, state)
         if queue or running:

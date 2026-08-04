@@ -168,7 +168,12 @@ VIRTUAL_ENV=/home/evgenii/ws/isaac/env_isaaclab \
 
 Use `--prepare-only` to create the isolated worktrees without starting Isaac Sim, or
 `--dry-run` to print all stage commands. The supervisor writes its manifest, per-stage logs,
-and resumable status under `logs/staged/`.
+and resumable status under `logs/staged/`. Before launching a stage it scans local worktree
+logs and compares the effective training arguments plus a fingerprint of the task, robot,
+and agent configuration. A matching clean run is recorded as `skipped_duplicate`; when it
+has a checkpoint, the next curriculum stage reuses that checkpoint. The human-readable
+`experiment_label` and supervisor-only changes do not make a run new. Use
+`--allow-duplicate` only when intentionally repeating an equivalent run.
 
 ### Single-factor and cross-factor experiments
 
