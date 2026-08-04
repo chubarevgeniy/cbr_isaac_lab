@@ -60,6 +60,7 @@ TRAINING_FINGERPRINT_ROOTS = (
 )
 
 SIGNATURE_DEFAULTS: dict[str, Any] = {
+    "timesteps": None,
     "distributed": False,
     "checkpoint": None,
     "policy_clip_actions": False,
@@ -76,7 +77,7 @@ SIGNATURE_DEFAULTS: dict[str, Any] = {
 SIGNATURE_KEYS = (
     "task",
     "num_envs",
-    "max_iterations",
+    "timesteps",
     "seed",
     "distributed",
     "checkpoint",
@@ -266,11 +267,21 @@ def normalize_checkpoint(value: Any) -> str | None:
     return str(path.resolve())
 
 
+def effective_timesteps(arguments: dict[str, Any]) -> int | None:
+    explicit = arguments.get("max_timesteps")
+    if explicit is not None:
+        return int(explicit)
+    iterations = arguments.get("max_iterations")
+    if iterations is not None:
+        return int(iterations) * ROLLOUTS_PER_ITERATION
+    return None
+
+
 def launch_signature(arguments: dict[str, Any]) -> dict[str, Any]:
     """Return only effective experiment controls, ignoring run labels."""
     signature: dict[str, Any] = {}
     for key in SIGNATURE_KEYS:
-        value = arguments.get(key, SIGNATURE_DEFAULTS.get(key))
+        value = effective_timesteps(arguments) if key == "timesteps" else arguments.get(key, SIGNATURE_DEFAULTS.get(key))
         if key in BOOL_SIGNATURE_KEYS:
             value = normalize_bool(value)
         elif key == "checkpoint":
@@ -279,14 +290,20 @@ def launch_signature(arguments: dict[str, Any]) -> dict[str, Any]:
     return signature
 
 
-def expected_launch_signature(identity: StageIdentity, checkpoint: Path | None) -> dict[str, Any]:
+def expected_launch_signature(
+    identity: StageIdentity,
+    checkpoint: Path | None,
+    *,
+    timesteps: int | None = None,
+    reset_optimizer_scheduler: bool | None = None,
+) -> dict[str, Any]:
     stage = identity.stage
     variant = identity.variant
     return launch_signature(
         {
             "task": TASK,
             "num_envs": NUM_ENVS,
-            "max_iterations": MAX_ITERATIONS,
+            "max_timesteps": TARGET_STEPS if timesteps is None else timesteps,
             "seed": variant.seed,
             "distributed": False,
             "checkpoint": checkpoint,
@@ -299,7 +316,11 @@ def expected_launch_signature(identity: StageIdentity, checkpoint: Path | None) 
             "initial_tilt_deg": stage.initial_tilt_deg,
             "learning_rate": None,
             "learning_rate_min": None,
-            "reset_optimizer_scheduler": checkpoint is not None,
+            "reset_optimizer_scheduler": (
+                checkpoint is not None
+                if reset_optimizer_scheduler is None
+                else reset_optimizer_scheduler
+            ),
             "ml_framework": "torch",
             "algorithm": "PPO",
         }

@@ -175,6 +175,12 @@ has a checkpoint, the next curriculum stage reuses that checkpoint. The human-re
 `experiment_label` and supervisor-only changes do not make a run new. Use
 `--allow-duplicate` only when intentionally repeating an equivalent run.
 
+For recovering an interrupted cohort, use `scripts/staged_resume_experiments.py`. It resumes
+an incomplete stage from its latest checkpoint with the optimizer state intact, then starts
+the next stages automatically. Stage transitions intentionally reset optimizer/scheduler
+state; resume processes use exact `--max_timesteps` so they do not train an extra full 64k
+steps after loading a partial checkpoint.
+
 ### Single-factor and cross-factor experiments
 
 Keep one-factor branches for attribution, then add cross-factor branches to measure interactions.
