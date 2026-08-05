@@ -31,6 +31,7 @@ python3 scripts/experiment_inventory.py
 - [Общий план и правила запуска](TRAINING_PLAN.md)
 - [Единый контекст для нового чата](EXPERIMENT_CONTEXT.md)
 - [Полный локальный инвентарь checkpoint’ов и TensorBoard](EXPERIMENT_INVENTORY.md)
+- [Отчёт по action regularization](ACTION_REGULARIZATION_EXPERIMENT_REPORT.md)
 
 ## Локальные артефакты
 
