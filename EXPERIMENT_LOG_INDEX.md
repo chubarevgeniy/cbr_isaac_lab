@@ -47,6 +47,14 @@
 - `absolute-clearance`: `/home/evgenii/ws/isaac/cbr_i_overnight_absolute_clearance/logs/skrl/cbr_i_ppo`
 - `delta-task-repeat`: `/home/evgenii/ws/isaac/cbr_i_overnight_delta_task_repeat/logs/skrl/cbr_i_ppo`
 
+## Action-regularization cohort
+
+Полный отчёт: [ACTION_REGULARIZATION_EXPERIMENT_REPORT.md](ACTION_REGULARIZATION_EXPERIMENT_REPORT.md).
+
+- Supervisor state: `/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/action_regularization/2026-08-04_22-29-38/status.json`
+- Все новые event-файлы и checkpoint’ы: `/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo`
+- Рекомендованный checkpoint: `action-reg-task-balanced-rate-continue/checkpoints/agent_125000.pt`
+
 ## TensorBoard для всей серии
 
 ```bash
@@ -63,7 +71,8 @@ delta-task-repeat:/home/evgenii/ws/isaac/cbr_i_overnight_delta_task_repeat/logs/
 staged-reward:/home/evgenii/ws/isaac/cbr_i_staged_reward_curriculum/logs/skrl/cbr_i_ppo,\
 staged-easy-robust:/home/evgenii/ws/isaac/cbr_i_staged_easy_to_robust/logs/skrl/cbr_i_ppo,\
 staged-easy-task:/home/evgenii/ws/isaac/cbr_i_staged_easy_task_to_robust/logs/skrl/cbr_i_ppo,\
-staged-control:/home/evgenii/ws/isaac/cbr_i_staged_staged_control/logs/skrl/cbr_i_ppo" \
+staged-control:/home/evgenii/ws/isaac/cbr_i_staged_staged_control/logs/skrl/cbr_i_ppo,\
+action-regularization:/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo" \
   --port=6006 --reload_interval=5 --reload_multifile=true
 ```
 

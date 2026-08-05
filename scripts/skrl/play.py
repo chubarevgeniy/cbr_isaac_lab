@@ -47,6 +47,11 @@ parser.add_argument(
     choices=["AMP", "PPO", "IPPO", "MAPPO"],
     help="The RL algorithm used for training the skrl agent.",
 )
+parser.add_argument(
+    "--policy_clip_actions",
+    action="store_true",
+    help="Clip deterministic and sampled policy actions to the bounded [-1, 1] action space.",
+)
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 
 # append AppLauncher cli args
@@ -67,6 +72,7 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import os
+import numpy as np
 import random
 import time
 import torch
@@ -120,6 +126,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    if args_cli.policy_clip_actions:
+        experiment_cfg["models"]["policy"]["clip_actions"] = True
+        experiment_cfg["models"]["policy"]["clip_mean_actions"] = True
+        env_cfg.action_space = gym.spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(4,),
+            dtype=np.float32,
+        )
 
     # configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
