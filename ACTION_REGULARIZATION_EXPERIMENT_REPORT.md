@@ -76,21 +76,21 @@ viable baseline-кандидата сортировка отдавала при�
 ## Артефакты
 
 - Supervisor state:
-  `/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/action_regularization/2026-08-04_22-29-38/status.json`
+  `/home/evgenii/ws/isaac/cbr_isaac_lab/logs/archive/cbr_i_action_regularization/action_regularization/2026-08-04_22-29-38/status.json`
 - Рекомендованный checkpoint:
-  `/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo/2026-08-05_04-20-51_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue/checkpoints/agent_125000.pt`
+  `/home/evgenii/ws/isaac/cbr_isaac_lab/logs/archive/cbr_i_action_regularization/skrl/cbr_i_ppo/2026-08-05_04-20-51_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue/checkpoints/agent_125000.pt`
 - Smoothness-first checkpoint:
-  `/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo/2026-08-05_07-13-34_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue-strengthen/checkpoints/agent_60000.pt`
+  `/home/evgenii/ws/isaac/cbr_isaac_lab/logs/archive/cbr_i_action_regularization/skrl/cbr_i_ppo/2026-08-05_07-13-34_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue-strengthen/checkpoints/agent_60000.pt`
 
 ## TensorBoard
 
 Текущий TensorBoard должен быть запущен с двумя log roots: каноническим и
-action-regularization worktree. Нужен `--reload_multifile=true`, потому что
+архивом action-regularization. Нужен `--reload_multifile=true`, потому что
 один skrl run содержит несколько event-файлов.
 
 ```bash
 /home/evgenii/ws/isaac/env_isaaclab/bin/tensorboard \
-  --logdir_spec="base:/home/evgenii/ws/isaac/cbr_isaac_lab/logs/skrl/cbr_i_ppo,action-regularization:/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo" \
+  --logdir_spec="base:/home/evgenii/ws/isaac/cbr_isaac_lab/logs/skrl/cbr_i_ppo,action-regularization:/home/evgenii/ws/isaac/cbr_isaac_lab/logs/archive/cbr_i_action_regularization/skrl/cbr_i_ppo" \
   --port=6006 --reload_interval=5 --reload_multifile=true
 ```
 
@@ -102,11 +102,11 @@ policy-side clipping, иначе `play.py` по умолчанию исполь�
 unbounded-конфигурацию baseline.
 
 ```bash
-cd /home/evgenii/ws/isaac/cbr_i_action_regularization
-PYTHONPATH=/home/evgenii/ws/isaac/cbr_i_action_regularization/source/CBRIIsaacLab \
+cd /home/evgenii/ws/isaac/cbr_isaac_lab
+PYTHONPATH=/home/evgenii/ws/isaac/cbr_isaac_lab/source/CBRIIsaacLab \
   /home/evgenii/ws/isaac/IsaacLab/isaaclab.sh -p scripts/skrl/play.py \
   --task=Template-Cbriisaaclab-Direct-v0 \
-  --checkpoint=/home/evgenii/ws/isaac/cbr_i_action_regularization/logs/skrl/cbr_i_ppo/2026-08-05_04-20-51_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue/checkpoints/agent_125000.pt \
+  --checkpoint=/home/evgenii/ws/isaac/cbr_isaac_lab/logs/archive/cbr_i_action_regularization/skrl/cbr_i_ppo/2026-08-05_04-20-51_experiment_action-regularization_efdee5d_clean_ppo_torch_action-reg-task-balanced-rate-continue/checkpoints/agent_125000.pt \
   --num_envs=16 --viz=newton --max_visible_envs=16 \
   --policy_clip_actions --real-time
 ```
