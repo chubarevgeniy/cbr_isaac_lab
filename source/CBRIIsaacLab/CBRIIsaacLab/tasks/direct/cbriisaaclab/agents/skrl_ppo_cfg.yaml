@@ -71,7 +71,7 @@ agent:
   experiment:
     directory: "cbr_i_ppo"
     experiment_name: ""
-    write_interval: auto
+    write_interval: 2000
     store_separately: False
     checkpoint_interval: 5000
 

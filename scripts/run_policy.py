@@ -56,6 +56,12 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg
 # Import robot config and env config
 from CBRIIsaacLab.robots.CBRI import CBR_I_CONFIG
 from CBRIIsaacLab.tasks.direct.cbriisaaclab.cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
+from CBRIIsaacLab.tasks.direct.cbriisaaclab.initial_pose_randomization import (
+    InitialPoseIndices,
+    apply_sitting_reset_variation,
+    sample_ground_safe_initial_pose,
+    sample_initial_commands,
+)
 
 # Imports for SKRL agent loading
 import CBRIIsaacLab.tasks  # noqa: F401
@@ -124,10 +130,11 @@ class RobotSceneCfg(InteractiveSceneCfg):
 
 
 class CBRIPolicyRunner:
-    def __init__(self, scene: InteractiveScene, cfg: CbriisaaclabEnvCfg):
+    def __init__(self, scene: InteractiveScene, cfg: CbriisaaclabEnvCfg, sim: sim_utils.SimulationContext):
         self.scene = scene
         self.robot = scene["robot"]
         self.cfg = cfg
+        self.sim = sim
         self.device = self.robot.device
         self.num_envs = self.scene.num_envs
 
@@ -145,6 +152,39 @@ class CBRIPolicyRunner:
         self.right_hip_idx, _ = self.robot.find_bodies('right_hip')
         self.left_knee_idx, _ = self.robot.find_bodies('left_shin')
         self.right_knee_idx, _ = self.robot.find_bodies('right_shin')
+
+        self.initial_pose_indices = InitialPoseIndices(
+            rotor_rod=self.rotor_rod_dof_name_idx[0],
+            rod_body=self.rod_body_dof_name_idx[0],
+            body_right_hip=self.body_right_hip_dof_name_idx[0],
+            body_left_hip=self.body_left_hip_dof_name_idx[0],
+            right_hip_shin=self.right_hip_shin_dof_name_idx[0],
+            left_hip_shin=self.left_hip_shin_dof_name_idx[0],
+            left_shin_body=self.left_knee_idx[0],
+            right_shin_body=self.right_knee_idx[0],
+        )
+        collision_body_ids = []
+        for body_name in (
+            "Rock",
+            "bottom_rotor",
+            "rod_1",
+            "body",
+            "right_hip",
+            "right_shin",
+            "left_hip",
+            "left_shin",
+        ):
+            body_ids, _ = self.robot.find_bodies(body_name)
+            collision_body_ids.append(body_ids[0])
+        self.collision_body_indices = torch.tensor(
+            collision_body_ids, device=self.device, dtype=torch.long
+        )
+        self.left_foot_offset = torch.tensor(
+            self.cfg.left_foot_offset_from_shin_loc, device=self.device
+        )
+        self.right_foot_offset = torch.tensor(
+            self.cfg.right_foot_offset_from_shin_loc, device=self.device
+        )
 
         self.noise_hip_knee_indices = [
             self.body_right_hip_dof_name_idx[0],
@@ -190,66 +230,47 @@ class CBRIPolicyRunner:
         self.joint_vel = self.robot.data.joint_vel.torch
 
     def reset(self):
-        # Initialize command
-        self.command[:, [0, 1, 2, 3, 4]] = get_command(device=self.device, sit_time=self.cfg.command_info_cfg['sit_min'] // 2)
+        env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        self.command.copy_(sample_initial_commands(self.num_envs, self.cfg, self.device))
 
-        # Reset robot to default state
-        joint_pos = self.robot.data.default_joint_pos.torch.clone()
-        joint_vel = self.robot.data.default_joint_vel.torch.clone()
-
-        # -- Standing initial state for 70% of environments
-        # Determine which envs will be standing
-        stand_mask = torch.rand(self.num_envs, device=self.device) < 0.7
-        stand_indices = torch.nonzero(stand_mask).flatten()
-        num_standing = len(stand_indices)
-
-        if num_standing > 0:
-            # Set standing command
-            self.command[stand_indices, :] = get_command(sit=0, device=self.device)
-
-            standing_joint_pos = joint_pos[stand_mask]
-
-            # -- Split standing envs into two groups for different poses
-            pose_a_mask = torch.rand(num_standing, device=self.device) < 0.5
-            num_pose_a = pose_a_mask.sum()
-            num_pose_b = num_standing - num_pose_a
-
-            # Set standing joint positions for group A
-            if num_pose_a > 0:
-                standing_joint_pos[pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_a['rotor_rod']
-                standing_joint_pos[pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_a['rod_body']
-                standing_joint_pos[pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_right_hip']
-                standing_joint_pos[pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_left_hip']
-                standing_joint_pos[pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['right_hip_shin']
-                standing_joint_pos[pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['left_hip_shin']
-
-            # Set standing joint positions for group B
-            if num_pose_b > 0:
-                standing_joint_pos[~pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_b['rotor_rod']
-                standing_joint_pos[~pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_b['rod_body']
-                standing_joint_pos[~pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_right_hip']
-                standing_joint_pos[~pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_left_hip']
-                standing_joint_pos[~pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['right_hip_shin']
-                standing_joint_pos[~pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['left_hip_shin']
-
-            joint_pos[stand_mask] = standing_joint_pos
-
-        # Apply initial tilt variation
-        joint_pos[:, self.rod_body_dof_name_idx] += math_utils.sample_uniform(
-            -self.cfg.initial_tilt_angle_variation,
-            self.cfg.initial_tilt_angle_variation,
-            joint_pos[:, self.rod_body_dof_name_idx].shape,
-            joint_pos.device,
+        # Keep sitting resets at their configured default pose. Active resets
+        # use exactly the same ground-safe sampler as the training task.
+        joint_pos = apply_sitting_reset_variation(
+            self.robot.data.default_joint_pos.torch,
+            self.command,
+            self.cfg,
+            self.initial_pose_indices.rod_body,
         )
+        joint_vel = torch.zeros_like(self.robot.data.default_joint_vel.torch)
+        root_pose = self.robot.data.default_root_pose.torch.clone()
+        root_pose[:, :3] += self.scene.env_origins
+        root_vel = torch.zeros_like(self.robot.data.default_root_vel.torch)
 
-        default_root_pose = self.robot.data.default_root_pose.torch.clone()
-        default_root_vel = self.robot.data.default_root_vel.torch.clone()
-        default_root_pose[:, :3] += self.scene.env_origins
+        active_mask = self.command[:, 0] == 0
+        if bool(active_mask.any().item()):
+            active_result = sample_ground_safe_initial_pose(
+                robot=self.robot,
+                env_ids=env_ids[active_mask],
+                default_joint_pos=joint_pos[active_mask],
+                default_joint_vel=joint_vel[active_mask],
+                root_pose=root_pose[active_mask],
+                soft_joint_pos_limits=self.robot.data.soft_joint_pos_limits.torch[active_mask],
+                cfg=self.cfg,
+                indices=self.initial_pose_indices,
+                collision_body_indices=self.collision_body_indices,
+                left_foot_offset=self.left_foot_offset,
+                right_foot_offset=self.right_foot_offset,
+                forward_fn=self.sim.forward,
+            )
+            joint_pos[active_mask] = active_result.joint_pos
+            joint_vel[active_mask] = active_result.joint_vel
 
-        self.robot.write_root_pose_to_sim_index(root_pose=default_root_pose)
-        self.robot.write_root_velocity_to_sim_index(root_velocity=default_root_vel)
-        self.robot.write_joint_position_to_sim_index(position=joint_pos)
-        self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel)
+        # The shared sampler changes only bottom_rotor when it needs extra
+        # clearance; root z and all root velocities remain untouched/zero.
+        self.robot.write_root_pose_to_sim_index(root_pose=root_pose, env_ids=env_ids)
+        self.robot.write_root_velocity_to_sim_index(root_velocity=root_vel, env_ids=env_ids)
+        self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
+        self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
         self.targets = joint_pos[:, self.actuated_dof_indices].clone()
 
@@ -569,7 +590,7 @@ def main():
     sim.reset()
 
     # Initialize runner helper (encapsulating env logic)
-    runner = CBRIPolicyRunner(scene, env_cfg)
+    runner = CBRIPolicyRunner(scene, env_cfg, sim)
 
     # Initialize SKRL agent if needed
     if runner_skrl is None and experiment_cfg is not None:

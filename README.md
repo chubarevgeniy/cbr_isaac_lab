@@ -84,6 +84,21 @@ The environment cannot be created without this file. The repository's
             python scripts/random_agent.py --task=<TASK_NAME>
             ```
 
+### Inspect randomized initial poses
+
+To create exactly 16 standing-like reset poses with a reproducible seed, print
+their FK/collision diagnostics, and leave Isaac Sim open for visual inspection:
+
+```bash
+../IsaacLab/isaaclab.sh -p scripts/inspect_initial_poses.py --seed 123 --viz newton
+```
+
+The inspector forces `sit=0` and `speed=0`, writes zero root/joint velocities,
+and does not call `env.step()`. Newton shows all 16 environments with joints
+and collision geometry enabled. Use `--viz kit` for the Kit viewport, or
+`--seed -1` to generate a seed at startup; the resolved seed is printed to the
+console.
+
 ### Set up IDE (Optional)
 
 To setup the IDE, please follow these instructions:

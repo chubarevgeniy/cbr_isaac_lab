@@ -74,8 +74,6 @@ class RewardCfg:
     termination_penalty_scale = -20.0
     alive_reward_scale = 0.05
     action_penalty_scale = -0.001
-    # Penalize abrupt changes in the normalized action between environment steps.
-    action_change_penalty_scale = -0.001
 
     # Walking terms
     walk_velocity_error_scale = -1.0
@@ -109,8 +107,8 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 25.0
     # - spaces definition
     action_space = 4
-    # 19 base observations + 4 previous actions used by the smoothness penalty.
-    observation_space = 23
+    # Joint state, command, and current joint targets.
+    observation_space = 19
     state_space = 0
 
     phys_sps = 250
@@ -138,8 +136,34 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     right_hip_shin_dof_name = "right_hip_Revolute_6"
     left_hip_shin_dof_name = "left_hip_Revolute_7"
 
-    # initial tilt angle variation
-    initial_tilt_angle_variation = 1.0/180 * math.pi  # 20 degrees in radians
+    # Initial command distribution. The 70% non-sitting environments are
+    # split evenly between standing and walking commands.
+    initial_sitting_fraction = 0.30
+    initial_walking_fraction = 0.50
+    initial_walking_speed_range = (0.25, 1.5)
+
+    # Initial active-pose distribution.
+    initial_body_tilt_range = (-60.0 * math.pi / 180.0, 60.0 * math.pi / 180.0)
+    initial_hip_delta = 45.0 * math.pi / 180.0
+    initial_knee_delta = 35.0 * math.pi / 180.0
+
+    # The root stays at its configured pose. Search the beam angle around the
+    # current standing value; the positive direction lowers this particular
+    # USD asset, so the negative side is tried first when more clearance is
+    # needed. The upper bound remains below the termination threshold.
+    initial_rotor_rod_search_start = 1.0 * math.pi / 180.0
+    initial_rotor_rod_search_min = -8.0 * math.pi / 180.0
+    initial_rotor_rod_search_max = 8.0 * math.pi / 180.0
+    initial_rotor_rod_search_step = 0.5 * math.pi / 180.0
+    initial_rotor_rod_search_steps = 36
+    # Contact at z=0 is allowed: Rock is the fixed root body and its authored
+    # collision envelope touches the ground when root z is unchanged.
+    initial_ground_safety_margin = 0.0
+    initial_pose_resample_attempts = 8
+
+    # Kept for old experiment configuration files; active reset randomization
+    # uses ``initial_body_tilt_range`` instead.
+    initial_tilt_angle_variation = 1.0 / 180.0 * math.pi
     head_offset_from_torso_loc = [0.04,0.16,0]
     left_foot_offset_from_shin_loc = [0.14,0,0.08]
     right_foot_offset_from_shin_loc = [0.14,0,-0.08]

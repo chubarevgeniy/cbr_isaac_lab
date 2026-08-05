@@ -68,6 +68,8 @@ datasets
 
 # Tests
 tests/
+!tests/
+!tests/test_initial_pose_randomization.py
 
 # Docker history
 .isaac-lab-docker-history

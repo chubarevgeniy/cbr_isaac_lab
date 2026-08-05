@@ -19,6 +19,12 @@ from isaaclab.utils import math as math_utils
 from isaaclab.utils.math import sample_gaussian, sample_uniform
 
 from .cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
+from .initial_pose_randomization import (
+    InitialPoseIndices,
+    apply_sitting_reset_variation,
+    sample_ground_safe_initial_pose,
+    sample_initial_commands,
+)
 
 
 class CbriisaaclabEnv(DirectRLEnv):
@@ -38,6 +44,33 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.right_hip_idx,_ = self.robot.find_bodies('right_hip')
         self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
         self.right_knee_idx,_ = self.robot.find_bodies('right_shin')
+
+        self.initial_pose_indices = InitialPoseIndices(
+            rotor_rod=self.rotor_rod_dof_name_idx[0],
+            rod_body=self.rod_body_dof_name_idx[0],
+            body_right_hip=self.body_right_hip_dof_name_idx[0],
+            body_left_hip=self.body_left_hip_dof_name_idx[0],
+            right_hip_shin=self.right_hip_shin_dof_name_idx[0],
+            left_hip_shin=self.left_hip_shin_dof_name_idx[0],
+            left_shin_body=self.left_knee_idx[0],
+            right_shin_body=self.right_knee_idx[0],
+        )
+        collision_body_ids = []
+        for body_name in (
+            "Rock",
+            "bottom_rotor",
+            "rod_1",
+            "body",
+            "right_hip",
+            "right_shin",
+            "left_hip",
+            "left_shin",
+        ):
+            body_ids, _ = self.robot.find_bodies(body_name)
+            collision_body_ids.append(body_ids[0])
+        self.collision_body_indices = torch.tensor(collision_body_ids, device=self.device, dtype=torch.long)
+        self.left_foot_offset = torch.tensor(self.cfg.left_foot_offset_from_shin_loc, device=self.device)
+        self.right_foot_offset = torch.tensor(self.cfg.right_foot_offset_from_shin_loc, device=self.device)
 
         self.noise_hip_knee_indices = [
             self.body_right_hip_dof_name_idx[0],
@@ -85,7 +118,6 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
-        self.previous_actions = torch.zeros_like(self.actions)
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
 
     def _setup_scene(self):
@@ -144,7 +176,6 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
-        self.previous_actions.copy_(self.actions)
         self.actions = actions.clone()
         scaled_actions = self._scale_actions(actions)
         self.targets += scaled_actions
@@ -410,7 +441,6 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel,
                 self.command[:,[0,4]],
                 self.targets,
-                self.previous_actions,
             ], dim=-1)
         }
     
@@ -455,11 +485,9 @@ class CbriisaaclabEnv(DirectRLEnv):
             reset_terminated=self.reset_terminated,
             command=command,
             actions=self.actions,
-            previous_actions=self.previous_actions,
             termination_penalty_scale=self.cfg.rewards.termination_penalty_scale,
             alive_reward_scale=self.cfg.rewards.alive_reward_scale,
             action_penalty_scale=self.cfg.rewards.action_penalty_scale,
-            action_change_penalty_scale=self.cfg.rewards.action_change_penalty_scale,
             walk_velocity_error_scale=self.cfg.rewards.walk_velocity_error_scale,
             walk_joint_velocity_scale=self.cfg.rewards.walk_joint_velocity_scale,
             walk_body_height_scale=self.cfg.rewards.walk_body_height_scale,
@@ -729,76 +757,58 @@ class CbriisaaclabEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
-        
+
         num_resets = len(env_ids)
-        
-        # Get default joint states
-        joint_pos = self.robot.data.default_joint_pos.torch[env_ids].clone()
-        joint_vel = self.robot.data.default_joint_vel.torch[env_ids].clone()
 
-        # Set initial command to sitting for all resetting envs
-        self.command[env_ids, :] = get_command(device=self.device, sit_time=self.cfg.command_info_cfg['sit_min'] // 2)
+        # Start every reset from the configured sitting state. Active
+        # standing/walking environments are replaced below by the shared
+        # randomized-pose sampler.
+        commands = sample_initial_commands(num_resets, self.cfg, self.device)
+        self.command[env_ids, :] = commands
 
-        # -- Standing initial state for 70% of environments
-        # Determine which envs will be standing
-        stand_mask = torch.rand(num_resets, device=self.device) < 0.7
-        stand_indices = env_ids[stand_mask]
-        num_standing = len(stand_indices)
-
-        if num_standing > 0:
-            # Set standing command
-            self.command[stand_indices, :] = get_command(sit=0,device=self.device)
-            
-            standing_joint_pos = joint_pos[stand_mask]
-
-            # -- Split standing envs into two groups for different poses
-            pose_a_mask = torch.rand(num_standing, device=self.device) < 0.5
-            num_pose_a = pose_a_mask.sum()
-            num_pose_b = num_standing - num_pose_a
-
-            # Set standing joint positions for group A
-            if num_pose_a > 0:
-                standing_joint_pos[pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_a['rotor_rod']
-                standing_joint_pos[pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_a['rod_body']
-                standing_joint_pos[pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_right_hip']
-                standing_joint_pos[pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_a['body_left_hip']
-                standing_joint_pos[pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['right_hip_shin']
-                standing_joint_pos[pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_a['left_hip_shin']
-
-            # Set standing joint positions for group B
-            if num_pose_b > 0:
-                standing_joint_pos[~pose_a_mask, self.rotor_rod_dof_name_idx] = self.cfg.default_standing_state_b['rotor_rod']
-                standing_joint_pos[~pose_a_mask, self.rod_body_dof_name_idx] = self.cfg.default_standing_state_b['rod_body']
-                standing_joint_pos[~pose_a_mask, self.body_right_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_right_hip']
-                standing_joint_pos[~pose_a_mask, self.body_left_hip_dof_name_idx] = self.cfg.default_standing_state_b['body_left_hip']
-                standing_joint_pos[~pose_a_mask, self.right_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['right_hip_shin']
-                standing_joint_pos[~pose_a_mask, self.left_hip_shin_dof_name_idx] = self.cfg.default_standing_state_b['left_hip_shin']
-
-            joint_pos[stand_mask] = standing_joint_pos
-
-        # Apply initial tilt variation to all resetting envs
-        joint_pos[:, self.rod_body_dof_name_idx] += sample_uniform(
-            -self.cfg.initial_tilt_angle_variation,
-            self.cfg.initial_tilt_angle_variation,
-            joint_pos[:, self.rod_body_dof_name_idx].shape,
-            joint_pos.device,
+        joint_pos = apply_sitting_reset_variation(
+            self.robot.data.default_joint_pos.torch[env_ids],
+            commands,
+            self.cfg,
+            self.initial_pose_indices.rod_body,
         )
+        joint_vel = torch.zeros_like(self.robot.data.default_joint_vel.torch[env_ids])
+        root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()
+        root_vel = torch.zeros_like(self.robot.data.default_root_vel.torch[env_ids])
+        root_pose[:, :3] += self.scene.env_origins[env_ids]
 
-        default_root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()
-        default_root_vel = self.robot.data.default_root_vel.torch[env_ids].clone()
-        default_root_pose[:, :3] += self.scene.env_origins[env_ids]
+        active_mask = commands[:, 0] == 0
+        if bool(active_mask.any().item()):
+            active_env_ids = env_ids[active_mask]
+            active_result = sample_ground_safe_initial_pose(
+                robot=self.robot,
+                env_ids=active_env_ids,
+                default_joint_pos=joint_pos[active_mask],
+                default_joint_vel=joint_vel[active_mask],
+                root_pose=root_pose[active_mask],
+                soft_joint_pos_limits=self.robot.data.soft_joint_pos_limits.torch[env_ids][active_mask],
+                cfg=self.cfg,
+                indices=self.initial_pose_indices,
+                collision_body_indices=self.collision_body_indices,
+                left_foot_offset=self.left_foot_offset,
+                right_foot_offset=self.right_foot_offset,
+                forward_fn=self.sim.forward,
+            )
+            joint_pos[active_mask] = active_result.joint_pos
+            joint_vel[active_mask] = active_result.joint_vel
 
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
 
-        self.robot.write_root_pose_to_sim_index(root_pose=default_root_pose, env_ids=env_ids)
-        self.robot.write_root_velocity_to_sim_index(root_velocity=default_root_vel, env_ids=env_ids)
+        # Keep root position, including z, at the configured value. Height
+        # correction happens only in bottom_rotor.
+        self.robot.write_root_pose_to_sim_index(root_pose=root_pose, env_ids=env_ids)
+        self.robot.write_root_velocity_to_sim_index(root_velocity=root_vel, env_ids=env_ids)
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
         self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
         self.actions[env_ids] = 0.0
-        self.previous_actions[env_ids] = 0.0
 
     def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
         # Scale actions (deltas)
@@ -831,11 +841,9 @@ def compute_rewards(
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
-    previous_actions: torch.Tensor,
     termination_penalty_scale: float,
     alive_reward_scale: float,
     action_penalty_scale: float,
-    action_change_penalty_scale: float,
     walk_velocity_error_scale: float,
     walk_joint_velocity_scale: float,
     walk_body_height_scale: float,
@@ -905,17 +913,11 @@ def compute_rewards(
     # Penalty for action magnitude (energy/effort)
     action_penalty = torch.sum(actions ** 2, dim=-1) * action_penalty_scale
 
-    # Penalize only abrupt action changes. Since this is quadratic, distributing
-    # the same total action change over multiple steps costs less than one jump.
-    action_change_penalty = (
-        torch.sum((actions - previous_actions) ** 2, dim=-1) * action_change_penalty_scale
-    )
-
     # Select the appropriate reward based on the command
     total_reward = torch.where(is_sitting_command, sit_reward * sit_reward_scale, walk_reward)
 
     # Add common rewards
-    total_reward += alive_reward + termination_penalty + action_penalty + action_change_penalty
+    total_reward += alive_reward + termination_penalty + action_penalty
     return total_reward
 
 def define_markers() -> VisualizationMarkers:
