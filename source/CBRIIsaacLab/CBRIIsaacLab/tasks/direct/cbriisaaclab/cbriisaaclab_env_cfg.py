@@ -40,7 +40,9 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "static_friction_range": (0.8, 1.0),
             "dynamic_friction_range": (0.8, 1.0),
-            "restitution_range": (1.0, 1.0),
+            # Small, randomized contact elasticity; 1.0 caused nearly
+            # perfectly elastic and overly bouncy impacts.
+            "restitution_range": (0.0, 0.2),
             "num_buckets": 250,
         },
     )
@@ -159,7 +161,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     initial_walking_speed_range = (0.25, 1.5)
 
     # Initial active-pose distribution.
-    initial_body_tilt_range = (-60.0 * math.pi / 180.0, 60.0 * math.pi / 180.0)
+    initial_body_tilt_range = (-20.0 * math.pi / 180.0, 20.0 * math.pi / 180.0)
     initial_hip_delta = 45.0 * math.pi / 180.0
     initial_knee_delta = 35.0 * math.pi / 180.0
 
@@ -218,13 +220,13 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # observation noise
     add_noise = True
-    noise_pos_hip_knee = 0.05
-    noise_vel_hip_knee = 0.05
-    noise_height_pos = 0.01
-    noise_height_vel = 0.05
-    noise_angle_pos = 0.05
-    noise_angle_vel = 0.05
-    noise_vel = 0.1
+    noise_pos_hip_knee = 0.02   # 1.15 deg
+    noise_vel_hip_knee = 0.03   # 1.72 deg/s
+    noise_height_pos = 0.005    # 0.29 deg
+    noise_height_vel = 0.03     # 1.72 deg/s
+    noise_angle_pos = 0.02      # 1.15 deg
+    noise_angle_vel = 0.03      # 1.72 deg/s
+    noise_vel = 0.05            # 2.86 deg/s
 
     # diagnostics
     # Metrics are emitted sparsely because skrl converts logged CUDA scalars to
