@@ -62,6 +62,10 @@ from CBRIIsaacLab.tasks.direct.cbriisaaclab.initial_pose_randomization import (
     sample_ground_safe_initial_pose,
     sample_initial_commands,
 )
+from CBRIIsaacLab.tasks.direct.cbriisaaclab.coordinate_conventions import (
+    canonical_actuated_to_raw,
+    raw_actuated_to_canonical,
+)
 
 # Imports for SKRL agent loading
 import CBRIIsaacLab.tasks  # noqa: F401
@@ -224,6 +228,48 @@ class CBRIPolicyRunner:
             [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
             device=self.device
         )
+        obs_index_by_joint = {
+            int(joint_index): obs_index
+            for obs_index, joint_index in enumerate(self.obs_joint_pos_indices.tolist())
+        }
+        self.obs_rotor_rod_pos_index = obs_index_by_joint[self.rotor_rod_dof_name_idx[0]]
+        self.obs_actuated_pos_indices = torch.tensor(
+            [obs_index_by_joint[index] for index in self.actuated_dof_indices],
+            device=self.device,
+            dtype=torch.long,
+        )
+
+        self._canonical_action_scale = torch.tensor(
+            [
+                self.cfg.action_hip_scale,
+                self.cfg.action_hip_scale,
+                self.cfg.action_knee_scale,
+                self.cfg.action_knee_scale,
+            ],
+            device=self.device,
+        )
+        self._canonical_action_offset = torch.tensor(
+            self.cfg.action_default_target,
+            device=self.device,
+        )
+        self._canonical_target_min = torch.tensor(
+            [
+                self.cfg.canonical_hip_min,
+                self.cfg.canonical_hip_min,
+                self.cfg.canonical_knee_min,
+                self.cfg.canonical_knee_min,
+            ],
+            device=self.device,
+        )
+        self._canonical_target_max = torch.tensor(
+            [
+                self.cfg.canonical_hip_max,
+                self.cfg.canonical_hip_max,
+                self.cfg.canonical_knee_max,
+                self.cfg.canonical_knee_max,
+            ],
+            device=self.device,
+        )
 
         # References
         self.joint_pos = self.robot.data.joint_pos.torch
@@ -272,7 +318,11 @@ class CBRIPolicyRunner:
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
-        self.targets = joint_pos[:, self.actuated_dof_indices].clone()
+        self.targets = raw_actuated_to_canonical(
+            joint_pos[:, self.actuated_dof_indices], self.cfg.canonical_hip_down_angle
+        )
+
+        self.actions.zero_()
 
     def update_and_sample_commands(self):
         # update timers
@@ -351,29 +401,35 @@ class CBRIPolicyRunner:
                 joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
             )
 
+        canonical_joint_pos = joint_pos[:, self.obs_joint_pos_indices].clone()
+        canonical_joint_pos[:, self.obs_rotor_rod_pos_index] = (
+            -canonical_joint_pos[:, self.obs_rotor_rod_pos_index]
+        )
+        canonical_joint_pos[:, self.obs_actuated_pos_indices] = raw_actuated_to_canonical(
+            joint_pos[:, self.actuated_dof_indices], self.cfg.canonical_hip_down_angle
+        )
+
         return torch.cat([
-            joint_pos[:, self.obs_joint_pos_indices],
+            canonical_joint_pos,
             joint_vel,
             self.command[:, [0, 4]],
-            self.targets,
+            self.actions,
         ], dim=-1).float()
 
-    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # Scale actions (deltas)
+    def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
+        """Convert normalized actions to direct canonical joint-position targets."""
+
         actions = actions.clamp(-1, 1)
-        actions[:, 0] *= self.cfg.action_hip_scale
-        actions[:, 1] *= self.cfg.action_hip_scale
-        actions[:, 2] *= self.cfg.action_knee_scale
-        actions[:, 3] *= self.cfg.action_knee_scale
-        return actions
+        targets = self._canonical_action_offset + actions * self._canonical_action_scale
+        return torch.maximum(torch.minimum(targets, self._canonical_target_max), self._canonical_target_min)
 
     def apply_actions(self, actions):
         self.actions = actions.clone()
-        scaled_actions = self._scale_actions(actions)
-        self.targets += scaled_actions
-        limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
-        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
-        self.robot.set_joint_position_target_index(target=self.targets, joint_ids=[
+        self.targets = self._actions_to_canonical_targets(actions)
+        raw_targets = canonical_actuated_to_raw(
+            self.targets, self.cfg.canonical_hip_down_angle
+        )
+        self.robot.set_joint_position_target_index(target=raw_targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],

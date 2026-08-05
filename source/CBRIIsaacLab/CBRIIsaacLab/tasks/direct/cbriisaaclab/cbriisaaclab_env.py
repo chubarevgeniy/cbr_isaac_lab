@@ -19,6 +19,7 @@ from isaaclab.utils import math as math_utils
 from isaaclab.utils.math import sample_gaussian, sample_uniform
 
 from .cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
+from .coordinate_conventions import canonical_actuated_to_raw, raw_actuated_to_canonical
 from .initial_pose_randomization import (
     InitialPoseIndices,
     apply_sitting_reset_variation,
@@ -93,6 +94,16 @@ class CbriisaaclabEnv(DirectRLEnv):
             [i for i in range(self.robot.num_joints) if i != self.base_rotor_dof_name_idx[0]],
             device=self.device
         )
+        obs_index_by_joint = {
+            int(joint_index): obs_index
+            for obs_index, joint_index in enumerate(self.obs_joint_pos_indices.tolist())
+        }
+        self.obs_rotor_rod_pos_index = obs_index_by_joint[self.rotor_rod_dof_name_idx[0]]
+        self.obs_actuated_pos_indices = torch.tensor(
+            [obs_index_by_joint[index] for index in self.actuated_dof_indices],
+            device=self.device,
+            dtype=torch.long,
+        )
         self.joint_pos = self.robot.data.joint_pos.torch
         self.joint_vel = self.robot.data.joint_vel.torch
 
@@ -118,7 +129,52 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.marker_offset[:, -1] = 0.5  # Offset for visualization
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self.previous_actions = torch.zeros_like(self.actions)
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
+        self._canonical_action_offset = torch.tensor(
+            self.cfg.action_default_target,
+            device=self.device,
+        )
+        self._canonical_action_scale = torch.tensor(
+            [
+                self.cfg.action_hip_scale,
+                self.cfg.action_hip_scale,
+                self.cfg.action_knee_scale,
+                self.cfg.action_knee_scale,
+            ],
+            device=self.device,
+        )
+        self._canonical_target_min = torch.tensor(
+            [
+                self.cfg.canonical_hip_min,
+                self.cfg.canonical_hip_min,
+                self.cfg.canonical_knee_min,
+                self.cfg.canonical_knee_min,
+            ],
+            device=self.device,
+        )
+        self._canonical_target_max = torch.tensor(
+            [
+                self.cfg.canonical_hip_max,
+                self.cfg.canonical_hip_max,
+                self.cfg.canonical_knee_max,
+                self.cfg.canonical_knee_max,
+            ],
+            device=self.device,
+        )
+
+    def _raw_to_canonical_actuated(self, raw: torch.Tensor) -> torch.Tensor:
+        return raw_actuated_to_canonical(raw, self.cfg.canonical_hip_down_angle)
+
+    def _canonical_to_raw_actuated(self, canonical: torch.Tensor) -> torch.Tensor:
+        return canonical_actuated_to_raw(canonical, self.cfg.canonical_hip_down_angle)
+
+    def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
+        """Convert normalized actions to direct canonical joint-position targets."""
+
+        actions = actions.clamp(-1.0, 1.0)
+        targets = self._canonical_action_offset + actions * self._canonical_action_scale
+        return torch.maximum(torch.minimum(targets, self._canonical_target_max), self._canonical_target_min)
 
     def _setup_scene(self):
         # Initialize the robot
@@ -176,11 +232,9 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
+        self.previous_actions = self.actions.clone()
         self.actions = actions.clone()
-        scaled_actions = self._scale_actions(actions)
-        self.targets += scaled_actions
-        limits = self.robot.data.soft_joint_pos_limits.torch[:, self.actuated_dof_indices]
-        self.targets = torch.clamp(self.targets, min=limits[..., 0], max=limits[..., 1])
+        self.targets = self._actions_to_canonical_targets(actions)
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -384,7 +438,8 @@ class CbriisaaclabEnv(DirectRLEnv):
         return None
 
     def _apply_action(self):
-        self.robot.set_joint_position_target_index(target=self.targets, joint_ids=[
+        raw_targets = self._canonical_to_raw_actuated(self.targets)
+        self.robot.set_joint_position_target_index(target=raw_targets, joint_ids=[
             self.body_right_hip_dof_name_idx[0],
             self.body_left_hip_dof_name_idx[0],
             self.right_hip_shin_dof_name_idx[0],
@@ -434,24 +489,57 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
             )
         
-        # The base rotor is not part of the observation space for the policy
+        # Targets are direct functions of the current action, so the Unitree-
+        # style last action is more useful than exposing a redundant target.
+        canonical_joint_pos = joint_pos[:, self.obs_joint_pos_indices].clone()
+        canonical_joint_pos[:, self.obs_rotor_rod_pos_index] = (
+            -canonical_joint_pos[:, self.obs_rotor_rod_pos_index]
+        )
+        canonical_joint_pos[:, self.obs_actuated_pos_indices] = self._raw_to_canonical_actuated(
+            joint_pos[:, self._actuated_dof_indices_tensor]
+        )
+
         return {
             "policy": torch.cat([
-                joint_pos[:, self.obs_joint_pos_indices],
+                canonical_joint_pos,
                 joint_vel,
                 self.command[:,[0,4]],
-                self.targets,
+                self.actions,
             ], dim=-1)
         }
     
     def _get_rewards(self):
-        body_vel = self.joint_vel[:, self.base_rotor_dof_name_idx]
-        body_height = self.joint_pos[:, self.rotor_rod_dof_name_idx]
+        # Observations keep angular velocities raw.  Reward terms that compare
+        # against linear commands use one-metre tangential proxies instead.
+        body_vel = (
+            self.joint_vel[:, self.base_rotor_dof_name_idx]
+            * self.cfg.longitudinal_velocity_proxy_lever_arm
+        )
+        body_height = (
+            -self.joint_pos[:, self.rotor_rod_dof_name_idx]
+            * self.cfg.height_proxy_lever_arm
+        )
+        body_vertical_vel = (
+            -self.joint_vel[:, self.rotor_rod_dof_name_idx]
+            * self.cfg.height_proxy_lever_arm
+        )
         body_angle = self.joint_pos[:, self.rod_body_dof_name_idx]
-        right_hip_angle = self.joint_pos[:, self.body_right_hip_dof_name_idx]
-        left_hip_angle = self.joint_pos[:, self.body_left_hip_dof_name_idx]
-        right_knee_angle = self.joint_pos[:, self.right_hip_shin_dof_name_idx]
-        left_knee_angle = self.joint_pos[:, self.left_hip_shin_dof_name_idx]
+        body_angular_vel = self.joint_vel[:, self.rod_body_dof_name_idx]
+        actuated_joint_pos = self._raw_to_canonical_actuated(
+            self.joint_pos[:, self._actuated_dof_indices_tensor]
+        )
+        actuated_joint_vel = self.joint_vel[:, self._actuated_dof_indices_tensor]
+        raw_actuated_joint_pos = self.joint_pos[:, self._actuated_dof_indices_tensor]
+        raw_actuated_joint_limits = self.robot.data.soft_joint_pos_limits.torch[:, self._actuated_dof_indices_tensor]
+        joint_pos_limits = (
+            (raw_actuated_joint_limits[..., 0] - raw_actuated_joint_pos).clamp_min(0.0)
+            + (raw_actuated_joint_pos - raw_actuated_joint_limits[..., 1]).clamp_min(0.0)
+        ).sum(dim=-1)
+
+        right_hip_angle = actuated_joint_pos[:, 0:1]
+        left_hip_angle = actuated_joint_pos[:, 1:2]
+        right_knee_angle = actuated_joint_pos[:, 2:3]
+        left_knee_angle = actuated_joint_pos[:, 3:4]
         right_hip_vel = self.joint_vel[:, self.body_right_hip_dof_name_idx]
         left_hip_vel = self.joint_vel[:, self.body_left_hip_dof_name_idx]
         right_knee_vel = self.joint_vel[:, self.right_hip_shin_dof_name_idx]
@@ -467,47 +555,38 @@ class CbriisaaclabEnv(DirectRLEnv):
         rewards = compute_rewards(
             body_vel=body_vel,
             body_height=body_height,
+            body_vertical_vel=body_vertical_vel,
+            body_angular_vel=body_angular_vel,
             body_angle=body_angle,
-            right_hip_angle=right_hip_angle,
-            left_hip_angle=left_hip_angle,
-            right_knee_angle=right_knee_angle,
-            left_knee_angle=left_knee_angle,
-            right_hip_vel=right_hip_vel,
-            left_hip_vel=left_hip_vel,
-            right_knee_vel=right_knee_vel,
-            left_knee_vel=left_knee_vel,
-            left_knee_location=left_knee_location,
-            right_knee_location=right_knee_location,
-            left_foot_location=left_foot_location,
-            right_foot_location=right_foot_location,
-            left_foot_vel=left_foot_vel,
-            right_foot_vel=right_foot_vel,
+            actuated_joint_pos=actuated_joint_pos,
+            actuated_joint_vel=actuated_joint_vel,
+            joint_pos_limits=joint_pos_limits,
             reset_terminated=self.reset_terminated,
             command=command,
             actions=self.actions,
-            termination_penalty_scale=self.cfg.rewards.termination_penalty_scale,
+            previous_actions=self.previous_actions,
             alive_reward_scale=self.cfg.rewards.alive_reward_scale,
-            action_penalty_scale=self.cfg.rewards.action_penalty_scale,
-            walk_velocity_error_scale=self.cfg.rewards.walk_velocity_error_scale,
-            walk_joint_velocity_scale=self.cfg.rewards.walk_joint_velocity_scale,
-            walk_body_height_scale=self.cfg.rewards.walk_body_height_scale,
-            walk_body_angle_scale=self.cfg.rewards.walk_body_angle_scale,
-            walk_knee_height_threshold=self.cfg.rewards.walk_knee_height_threshold,
-            walk_low_knee_penalty_scale=self.cfg.rewards.walk_low_knee_penalty_scale,
-            feet_drag_height_decay=self.cfg.rewards.feet_drag_height_decay,
-            feet_drag_penalty_scale=self.cfg.rewards.feet_drag_penalty_scale,
+            walk_velocity_tracking_scale=self.cfg.rewards.walk_velocity_tracking_scale,
+            walk_velocity_tracking_std=self.cfg.rewards.walk_velocity_tracking_std,
+            base_vertical_velocity_scale=self.cfg.rewards.base_vertical_velocity_scale,
+            base_angular_velocity_scale=self.cfg.rewards.base_angular_velocity_scale,
+            joint_velocity_scale=self.cfg.rewards.joint_velocity_scale,
+            action_rate_scale=self.cfg.rewards.action_rate_scale,
+            joint_position_limits_scale=self.cfg.rewards.joint_position_limits_scale,
+            joint_deviation_waist_scale=self.cfg.rewards.joint_deviation_waist_scale,
+            joint_deviation_legs_scale=self.cfg.rewards.joint_deviation_legs_scale,
+            flat_orientation_scale=self.cfg.rewards.flat_orientation_scale,
+            walk_base_height_target=self.cfg.rewards.walk_base_height_target,
+            walk_base_height_scale=self.cfg.rewards.walk_base_height_scale,
+            walk_body_angle_target=self.cfg.rewards.walk_body_angle_target,
             sit_body_height_target=self.cfg.rewards.sit_body_height_target,
             sit_body_height_scale=self.cfg.rewards.sit_body_height_scale,
-            sit_body_velocity_scale=self.cfg.rewards.sit_body_velocity_scale,
             sit_body_angle_target=self.cfg.rewards.sit_body_angle_target,
-            sit_body_angle_scale=self.cfg.rewards.sit_body_angle_scale,
             sit_right_hip_angle_target=self.cfg.rewards.sit_right_hip_angle_target,
             sit_left_hip_angle_target=self.cfg.rewards.sit_left_hip_angle_target,
-            sit_hip_angle_scale=self.cfg.rewards.sit_hip_angle_scale,
             sit_right_knee_angle_target=self.cfg.rewards.sit_right_knee_angle_target,
             sit_left_knee_angle_target=self.cfg.rewards.sit_left_knee_angle_target,
-            sit_knee_angle_scale=self.cfg.rewards.sit_knee_angle_scale,
-            sit_reward_scale=self.cfg.rewards.sit_reward_scale,
+            sit_pose_angle_multiplier=self.cfg.rewards.sit_pose_angle_multiplier,
         )
 
         self.extras.pop("log", None)
@@ -544,17 +623,19 @@ class CbriisaaclabEnv(DirectRLEnv):
         with torch.no_grad():
             raw_actions = self.actions
             clipped_actions = raw_actions.clamp(-1.0, 1.0)
-            scaled_action_delta = self._scale_actions(raw_actions)
-            unnoisy_joint_state = self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
+            canonical_action_target = self._actions_to_canonical_targets(raw_actions)
+            unnoisy_joint_state = self._raw_to_canonical_actuated(
+                self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
+            )
             target_error = self.targets - unnoisy_joint_state
 
             distributions = {
                 "action/raw": raw_actions,
                 "action/clipped": clipped_actions,
-                "action/scaled_delta": scaled_action_delta,
-                "target/absolute": self.targets,
+                "action/target_canonical": canonical_action_target,
+                "target/canonical": self.targets,
                 "target/error_to_unnoisy_joint": target_error,
-                "state/unnoisy_joint": unnoisy_joint_state,
+                "state/unnoisy_joint_canonical": unnoisy_joint_state,
             }
             for name, values in distributions.items():
                 for joint_index, joint_name in enumerate(self._histogram_joint_names):
@@ -639,14 +720,16 @@ class CbriisaaclabEnv(DirectRLEnv):
         left_foot_speed = torch.linalg.vector_norm(left_foot_vel[:, :2], dim=-1)
         right_foot_speed = torch.linalg.vector_norm(right_foot_vel[:, :2], dim=-1)
 
-        sit_rotor_target = 5.2 * math.pi / 180.0
-        sit_rod_target = -80.0 * math.pi / 180.0
-        sit_right_knee_target = -124.0 * math.pi / 180.0 * 0.99
-        sit_left_knee_target = 124.0 * math.pi / 180.0 * 0.99
+        sit_rotor_target = self.cfg.rewards.sit_body_height_target
+        sit_rod_target = self.cfg.rewards.sit_body_angle_target
+        sit_right_hip_target = self.cfg.rewards.sit_right_hip_angle_target
+        sit_left_hip_target = self.cfg.rewards.sit_left_hip_angle_target
+        sit_right_knee_target = self.cfg.rewards.sit_right_knee_angle_target
+        sit_left_knee_target = self.cfg.rewards.sit_left_knee_angle_target
         sit_rotor_error = body_height - sit_rotor_target
         sit_rod_error = body_angle - sit_rod_target
-        sit_right_hip_error = right_hip_angle
-        sit_left_hip_error = left_hip_angle
+        sit_right_hip_error = right_hip_angle - sit_right_hip_target
+        sit_left_hip_error = left_hip_angle - sit_left_hip_target
         sit_right_knee_error = right_knee_angle - sit_right_knee_target
         sit_left_knee_error = left_knee_angle - sit_left_knee_target
         sit_joint_angle_error = torch.stack(
@@ -690,9 +773,9 @@ class CbriisaaclabEnv(DirectRLEnv):
             "Physical/walk/mean_foot_height": self._masked_mean(
                 (left_foot_height + right_foot_height) * 0.5, walking
             ),
-            "Physical/walk/rotor_rod_angle": self._masked_mean(body_height, walking),
+            "Physical/walk/height_proxy_m": self._masked_mean(body_height, walking),
             "Physical/walk/rod_body_angle": self._masked_mean(body_angle, walking),
-            "Physical/walk/rotor_rod_angle_abs": self._masked_mean(body_height.abs(), walking),
+            "Physical/walk/height_proxy_m_abs": self._masked_mean(body_height.abs(), walking),
             "Physical/walk/rod_body_angle_abs": self._masked_mean(body_angle.abs(), walking),
             "Physical/walk/rotor_rod_angular_velocity_abs": self._masked_mean(rotor_rod_vel.abs(), walking),
             "Physical/walk/rod_body_angular_velocity_abs": self._masked_mean(rod_body_vel.abs(), walking),
@@ -722,8 +805,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             "Physical/walk/right_foot_vertical_velocity": self._masked_mean(right_foot_vel[:, 2], walking),
             "Physical/sit/torso_height": self._masked_mean(torso_height, sitting),
             "Physical/sit/head_height": self._masked_mean(head_height, sitting),
-            "Physical/sit/rotor_rod_angle_error_signed": self._masked_mean(sit_rotor_error, sitting),
-            "Physical/sit/rotor_rod_angle_error_abs": self._masked_mean(sit_rotor_error.abs(), sitting),
+            "Physical/sit/height_proxy_error_m_signed": self._masked_mean(sit_rotor_error, sitting),
+            "Physical/sit/height_proxy_error_m_abs": self._masked_mean(sit_rotor_error.abs(), sitting),
             "Physical/sit/rod_body_angle_error_signed": self._masked_mean(sit_rod_error, sitting),
             "Physical/sit/rod_body_angle_error_abs": self._masked_mean(sit_rod_error.abs(), sitting),
             "Physical/sit/right_hip_angle_error_abs": self._masked_mean(sit_right_hip_error.abs(), sitting),
@@ -807,118 +890,120 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
 
-        self.targets[env_ids] = joint_pos[:, self.actuated_dof_indices]
+        self.targets[env_ids] = self._raw_to_canonical_actuated(
+            joint_pos[:, self._actuated_dof_indices_tensor]
+        )
         self.actions[env_ids] = 0.0
-
-    def _scale_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # Scale actions (deltas)
-        actions = actions.clamp(-1, 1)
-        actions[:,0] *= self.cfg.action_hip_scale
-        actions[:,1] *= self.cfg.action_hip_scale
-        actions[:,2] *= self.cfg.action_knee_scale
-        actions[:,3] *= self.cfg.action_knee_scale
-        return actions
+        self.previous_actions[env_ids] = 0.0
     
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
     body_height: torch.Tensor,
+    body_vertical_vel: torch.Tensor,
+    body_angular_vel: torch.Tensor,
     body_angle: torch.Tensor,
-    right_hip_angle: torch.Tensor,
-    left_hip_angle: torch.Tensor,
-    right_knee_angle: torch.Tensor,
-    left_knee_angle: torch.Tensor,
-    right_hip_vel: torch.Tensor,
-    left_hip_vel: torch.Tensor,
-    right_knee_vel: torch.Tensor,
-    left_knee_vel: torch.Tensor,
-    left_knee_location: torch.Tensor,
-    right_knee_location: torch.Tensor,
-    left_foot_location: torch.Tensor,
-    right_foot_location: torch.Tensor,
-    left_foot_vel: torch.Tensor,
-    right_foot_vel: torch.Tensor,
+    actuated_joint_pos: torch.Tensor,
+    actuated_joint_vel: torch.Tensor,
+    joint_pos_limits: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
-    termination_penalty_scale: float,
+    previous_actions: torch.Tensor,
     alive_reward_scale: float,
-    action_penalty_scale: float,
-    walk_velocity_error_scale: float,
-    walk_joint_velocity_scale: float,
-    walk_body_height_scale: float,
-    walk_body_angle_scale: float,
-    walk_knee_height_threshold: float,
-    walk_low_knee_penalty_scale: float,
-    feet_drag_height_decay: float,
-    feet_drag_penalty_scale: float,
+    walk_velocity_tracking_scale: float,
+    walk_velocity_tracking_std: float,
+    base_vertical_velocity_scale: float,
+    base_angular_velocity_scale: float,
+    joint_velocity_scale: float,
+    action_rate_scale: float,
+    joint_position_limits_scale: float,
+    joint_deviation_waist_scale: float,
+    joint_deviation_legs_scale: float,
+    flat_orientation_scale: float,
+    walk_base_height_target: float,
+    walk_base_height_scale: float,
+    walk_body_angle_target: float,
     sit_body_height_target: float,
     sit_body_height_scale: float,
-    sit_body_velocity_scale: float,
     sit_body_angle_target: float,
-    sit_body_angle_scale: float,
     sit_right_hip_angle_target: float,
     sit_left_hip_angle_target: float,
-    sit_hip_angle_scale: float,
     sit_right_knee_angle_target: float,
     sit_left_knee_angle_target: float,
-    sit_knee_angle_scale: float,
-    sit_reward_scale: float,
+    sit_pose_angle_multiplier: float,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
     is_sitting_command = command[:, 0] == 1
-
-    # Common rewards/penalties for all envs
-    termination_penalty = reset_terminated.float() * termination_penalty_scale
-    alive_reward = (1.0 - reset_terminated.float())
-
-    # --- Rewards for walking ---
-    # Penalize deviation from target speed and encourage standing height
-    walk_reward = (body_vel.squeeze(-1) - command[:, 1]).abs() * walk_velocity_error_scale
-    walk_reward += right_hip_vel.abs().squeeze(-1) * walk_joint_velocity_scale
-    walk_reward += left_hip_vel.abs().squeeze(-1) * walk_joint_velocity_scale
-    walk_reward += right_knee_vel.abs().squeeze(-1) * walk_joint_velocity_scale
-    walk_reward += left_knee_vel.abs().squeeze(-1) * walk_joint_velocity_scale
-    walk_reward += body_height.squeeze(-1) * walk_body_height_scale
-    walk_reward += body_angle.abs().squeeze(dim=-1) * walk_body_angle_scale
-
-    walk_reward += (
-        ~is_sitting_command & (left_knee_location[:, 2] < walk_knee_height_threshold)
-    ).float() * walk_low_knee_penalty_scale
-    walk_reward += (
-        ~is_sitting_command & (right_knee_location[:, 2] < walk_knee_height_threshold)
-    ).float() * walk_low_knee_penalty_scale
-
-    # Penalty for feet dragging
-    feet_drag_penalty = torch.exp(-left_foot_location[:, 2] * feet_drag_height_decay) * torch.norm(
-        left_foot_vel[:, :2], dim=-1
+    mode_multiplier = torch.where(
+        is_sitting_command,
+        torch.full_like(command[:, 1], sit_pose_angle_multiplier),
+        torch.ones_like(command[:, 1]),
     )
-    feet_drag_penalty += torch.exp(-right_foot_location[:, 2] * feet_drag_height_decay) * torch.norm(
-        right_foot_vel[:, :2], dim=-1
+
+    body_vel_value = body_vel.squeeze(-1)
+    body_height_value = body_height.squeeze(-1)
+    body_vertical_vel_value = body_vertical_vel.squeeze(-1)
+    body_angular_vel_value = body_angular_vel.squeeze(-1)
+    body_angle_value = body_angle.squeeze(-1)
+
+    sit_joint_target = torch.zeros_like(actuated_joint_pos)
+    sit_joint_target[:, 0] = sit_right_hip_angle_target
+    sit_joint_target[:, 1] = sit_left_hip_angle_target
+    sit_joint_target[:, 2] = sit_right_knee_angle_target
+    sit_joint_target[:, 3] = sit_left_knee_angle_target
+    joint_target = torch.where(
+        is_sitting_command.unsqueeze(-1), sit_joint_target, torch.zeros_like(actuated_joint_pos)
     )
-    walk_reward += feet_drag_penalty * feet_drag_penalty_scale
+    body_angle_target = torch.where(
+        is_sitting_command,
+        torch.full_like(body_angle_value, sit_body_angle_target),
+        torch.full_like(body_angle_value, walk_body_angle_target),
+    )
+    body_height_target = torch.where(
+        is_sitting_command,
+        torch.full_like(body_height_value, sit_body_height_target),
+        torch.full_like(body_height_value, walk_base_height_target),
+    )
+    body_height_scale = torch.where(
+        is_sitting_command,
+        torch.full_like(body_height_value, sit_body_height_scale),
+        torch.full_like(body_height_value, walk_base_height_scale),
+    )
+    velocity_command = torch.where(
+        is_sitting_command, torch.zeros_like(command[:, 1]), command[:, 1]
+    )
 
-    # --- Rewards for sitting ---
-    # Penalize any velocity to encourage being still.
-    # You could also add a reward for being at a low height.
-    sit_reward = (body_height - sit_body_height_target).abs().squeeze(dim=-1) * sit_body_height_scale
-    sit_reward += body_vel.abs().squeeze(-1) * sit_body_velocity_scale
-    sit_reward += (body_angle - sit_body_angle_target).abs().squeeze(dim=-1) * sit_body_angle_scale
-    sit_reward += (right_hip_angle - sit_right_hip_angle_target).abs().squeeze(dim=-1) * sit_hip_angle_scale
-    sit_reward += (left_hip_angle - sit_left_hip_angle_target).abs().squeeze(dim=-1) * sit_hip_angle_scale
-    sit_reward += (right_knee_angle - sit_right_knee_angle_target).abs().squeeze(dim=-1) * sit_knee_angle_scale
-    sit_reward += (left_knee_angle - sit_left_knee_angle_target).abs().squeeze(dim=-1) * sit_knee_angle_scale
+    # Common Unitree-style reward terms.  There is intentionally no separate
+    # death/termination penalty: Unitree terminates the episode and only pays
+    # the alive term on non-terminated steps.
+    alive_reward = (1.0 - reset_terminated.float()) * alive_reward_scale
+    common_reward = alive_reward
+    common_reward += torch.square(body_vertical_vel_value) * base_vertical_velocity_scale
+    common_reward += torch.square(body_angular_vel_value) * base_angular_velocity_scale
+    common_reward += torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
+    common_reward += torch.sum(torch.square(actions - previous_actions), dim=-1) * action_rate_scale
+    common_reward += joint_pos_limits * joint_position_limits_scale
 
-    # Penalty for action magnitude (energy/effort)
-    action_penalty = torch.sum(actions ** 2, dim=-1) * action_penalty_scale
+    # Unitree track_lin_vel_xy_exp reduced to the one available longitudinal
+    # speed proxy. Sitting is the same stand-still command with v_target=0.
+    velocity_error = body_vel_value - velocity_command
+    mode_reward = torch.exp(
+        -(velocity_error ** 2) / (walk_velocity_tracking_std ** 2)
+    ) * walk_velocity_tracking_scale
 
-    # Select the appropriate reward based on the command
-    total_reward = torch.where(is_sitting_command, sit_reward * sit_reward_scale, walk_reward)
+    # Unitree joint_deviation_waists, joint_deviation_legs and
+    # flat_orientation_l2. For sitting the same terms point to the sitting
+    # target and are doubled to make the pose precise.
+    mode_reward += (
+        torch.abs(body_angle_value - body_angle_target) * joint_deviation_waist_scale
+        + torch.sum(torch.abs(actuated_joint_pos - joint_target), dim=-1) * joint_deviation_legs_scale
+        + torch.square(body_angle_value - body_angle_target) * flat_orientation_scale
+    ) * mode_multiplier
+    mode_reward += torch.square(body_height_value - body_height_target) * body_height_scale
 
-    # Add common rewards
-    total_reward += alive_reward + termination_penalty + action_penalty
-    return total_reward
+    return common_reward + mode_reward
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

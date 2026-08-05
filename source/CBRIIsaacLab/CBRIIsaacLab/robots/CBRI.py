@@ -24,7 +24,6 @@ CBR_I_CONFIG = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.001,
         ),
-        activate_contact_sensors=True,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.0),
@@ -34,8 +33,10 @@ CBR_I_CONFIG = ArticulationCfg(
             "rod_1_Revolute_3": -80.0 * np.pi / 180.0,
             "body_Revolute_4": 0,  # Right_hip
             "body_Revolute_5": 0,  # Left_hip
-            "right_hip_Revolute_6": -124.0 * np.pi / 180.0 * 0.99,
-            "left_hip_Revolute_7": 124.0 * np.pi / 180.0 * 0.99,
+            # Keep the reset infinitesimally inside the authored USD limit;
+            # the canonical task target remains the nominal 124 deg.
+            "right_hip_Revolute_6": -124.0 * np.pi / 180.0 * 0.9999,
+            "left_hip_Revolute_7": 124.0 * np.pi / 180.0 * 0.9999,
         },
         joint_vel={
             "Rock_Revolute_1": 0.0,

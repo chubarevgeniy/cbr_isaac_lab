@@ -26,25 +26,25 @@
 ../IsaacLab/isaaclab.sh -p scripts/skrl/train.py \
     --task=Template-Cbriisaaclab-Direct-v0 \
     --num_envs=2048 \
-    --max_iterations=25000
+    --max_iterations=16667
 ```
 
-`--max_iterations` — это число PPO-итераций, а не прямое число environment timesteps. При текущем `rollouts: 32` скрипт запуска устанавливает:
+`--max_iterations` — это число PPO-итераций, а не прямое число environment timesteps. При текущем `rollouts: 24` скрипт запуска устанавливает:
 
 ```text
 trainer.timesteps = max_iterations * rollouts
 ```
 
-Поэтому `--max_iterations=25000` заменяет значение из YAML `trainer.timesteps: 800000` на те же `800000` timesteps. Если параметр не указывать, используется значение `trainer.timesteps` из YAML.
+Поэтому `--max_iterations=16667` задаёт `400008` timesteps, то есть практически заменяет значение из YAML `trainer.timesteps: 400000`. Если параметр не указывать, используется значение `trainer.timesteps` из YAML.
 
 Для последовательной проверки длительности обучения использовать такие запуски:
 
-- `--max_iterations=1000` → `32000` environment timesteps, быстрый sanity-check;
-- `--max_iterations=5000` → `160000` environment timesteps, короткий эксперимент;
-- `--max_iterations=10000` → `320000` environment timesteps, промежуточная проверка;
-- `--max_iterations=25000` → `800000` environment timesteps, длинный полноценный запуск.
+- `--max_iterations=1000` → `24000` environment timesteps, быстрый sanity-check;
+- `--max_iterations=5000` → `120000` environment timesteps, короткий эксперимент;
+- `--max_iterations=10000` → `240000` environment timesteps, промежуточная проверка;
+- `--max_iterations=16667` → `400008` environment timesteps, длинный полноценный запуск.
 
-При `2048` окружениях последний вариант соответствует примерно `1.64` млрд переходов среды. Для обучения без визуализации не добавлять `--viz` и `--video`.
+При `2048` окружениях последний вариант соответствует примерно `819` млн переходов среды. Для обучения без визуализации не добавлять `--viz` и `--video`.
 
 ### Какие метрики сравнивать
 
@@ -61,8 +61,8 @@ trainer.timesteps = max_iterations * rollouts
 - `Physical/termination/*`: доля падений и time-out.
 - `PhysicalHistogram/action/raw/*`: распределение сырых action от policy до clamp.
 - `PhysicalHistogram/action/clipped/*`: распределение action после ограничения `[-1, 1]`.
-- `PhysicalHistogram/action/scaled_delta/*`: фактическая масштабированная delta для target.
-- `PhysicalHistogram/target/absolute/*`: абсолютные targets для actuated joints.
+- `PhysicalHistogram/action/target_canonical/*`: фактический прямой canonical target.
+- `PhysicalHistogram/target/canonical/*`: canonical targets для actuated joints.
 - `PhysicalHistogram/target/error_to_unnoisy_joint/*`: target минус реальное незашумлённое состояние сустава.
 - `PhysicalHistogram/state/unnoisy_joint/*`: распределение незашумлённых состояний actuated joints.
 
@@ -133,7 +133,13 @@ Baseline должен быть точкой сравнения для всех �
 
 ### Этап 5. Представление action и joint targets
 
-Сравнить два способа управления:
+Базовый контракт ветки `g1-copy` — прямой bounded target:
+
+- action не накапливается от предыдущего target;
+- action переводится в каноническую joint-position target и затем в raw USD;
+- observation получает `last_action`, а не скрытое накопленное состояние target.
+
+Для регрессионного сравнения остаётся вариант delta targets:
 
 - delta targets: action масштабируется, прибавляется к текущей цели и ограничивается soft joint limits;
 - bounded absolute targets: action напрямую преобразуется в допустимую абсолютную joint target.
@@ -157,14 +163,15 @@ Baseline должен быть точкой сравнения для всех �
 - удержание высоты/положения корпуса;
 - ошибки rod/hip/knee angles;
 - штрафы угловых скоростей;
-- penalty за drag стоп;
-- penalty за action magnitude;
-- penalty за низкое положение колена/стопы;
-- контактный penalty за скольжение стоп;
-- reward за clearance swing foot;
+- penalty за изменение action (`action_rate`);
+- penalty за выход физических joint positions за soft limits;
 - общий множитель `rewards_shaper_scale`.
 
 Для каждого компонента записать формулу, scale, диапазон значений и физический эффект. Сравнивать прежде всего независимые физические метрики. Если reward растёт, а speed error, высота стоп или ошибки углов не улучшаются, считать изменение неудачным для физической задачи.
+
+`joint_acc`, `applied_torque`, gait, foot clearance, foot slide и contact
+penalties в текущий baseline не входят: для них намеренно не добавляются
+дополнительные сигналы или контактные сенсоры.
 
 ### Этап 7. Архитектура policy/value
 

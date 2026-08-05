@@ -22,6 +22,11 @@ joint_names = [
     "left_hip_Revolute_7",  # left_hip_shin
 ]
 
+# CPU FK/ground-clearance probe for the canonical standing pose:
+# canonical hips/knees = [0, 0, 0, 0], body tilt = 0 deg.  At -7.0 deg one
+# shin still enters the floor; -7.5 deg is the first safe 0.5-deg grid point.
+STANDING_BASE_ROTOR_ANGLE_TARGET = -7.5 * math.pi / 180.0
+
 @configclass
 class EventCfg:
     """Configuration for randomization."""
@@ -70,34 +75,45 @@ class EventCfg:
 class RewardCfg:
     """Weights, targets, and thresholds used to compute the task reward."""
 
-    # Common terms
-    termination_penalty_scale = -20.0
-    alive_reward_scale = 0.05
-    action_penalty_scale = -0.001
+    # Unitree common term.  Unitree does not add a separate death reward:
+    # termination only ends the episode, while ``alive`` is paid on non-
+    # terminated steps.
+    alive_reward_scale = 0.15
 
-    # Walking terms
-    walk_velocity_error_scale = -1.0
-    walk_joint_velocity_scale = -0.000001
-    walk_body_height_scale = -0.5
-    walk_body_angle_scale = -0.05
-    walk_knee_height_threshold = 0.1
-    walk_low_knee_penalty_scale = -0.1
-    feet_drag_height_decay = 15.0
-    feet_drag_penalty_scale = -0.03
+    # Unitree G1 terms adapted to the available CBR-I signals.
+    # The one-dimensional analogue of Unitree's track_lin_vel_xy uses the
+    # same exp-kernel and std=sqrt(0.25)=0.5, with the beam-rate proxy as v.
+    walk_velocity_tracking_scale = 1.0
+    walk_velocity_tracking_std = math.sqrt(0.25)
+    base_vertical_velocity_scale = -2.0
+    base_angular_velocity_scale = -0.05
+    joint_velocity_scale = -0.001
+    action_rate_scale = -0.05
+    joint_position_limits_scale = -5.0
+    joint_deviation_waist_scale = -1.0
+    joint_deviation_legs_scale = -1.0
+    flat_orientation_scale = -5.0
 
-    # Sitting terms
-    sit_body_height_target = 5.2 * math.pi / 180.0
-    sit_body_height_scale = -0.1
-    sit_body_velocity_scale = -0.1
+    # Root/base terms use the one-metre beam proxies agreed for CBR-I.
+    height_proxy_lever_arm = 1.0  # m
+    walk_base_height_target = -STANDING_BASE_ROTOR_ANGLE_TARGET * height_proxy_lever_arm
+    walk_base_height_scale = -10.0
+    walk_body_angle_target = 0.0
+
+    # Sitting terms.  Height is represented by the negative beam angle and a
+    # one-metre lever-arm proxy, so the current raw +5.2 deg reset is -0.0908 m.
+    sit_body_height_target = -5.2 * math.pi / 180.0 * height_proxy_lever_arm
+    sit_body_height_scale = -10.0
     sit_body_angle_target = -80.0 * math.pi / 180.0
-    sit_body_angle_scale = -0.05
-    sit_right_hip_angle_target = 0.0
-    sit_left_hip_angle_target = 0.0
-    sit_hip_angle_scale = -0.1
-    sit_right_knee_angle_target = -124.0 * math.pi / 180.0 * 0.99
-    sit_left_knee_angle_target = 124.0 * math.pi / 180.0 * 0.99
-    sit_knee_angle_scale = -0.1
-    sit_reward_scale = 0.5
+    # Canonical hip coordinates: 0 deg is the thigh-down reference; raw hip
+    # angles 0/0 in the sitting reset therefore become +130/+130 deg.
+    sit_right_hip_angle_target = 130.0 * math.pi / 180.0
+    sit_left_hip_angle_target = 130.0 * math.pi / 180.0
+    sit_right_knee_angle_target = 124.0 * math.pi / 180.0
+    sit_left_knee_angle_target = 124.0 * math.pi / 180.0
+    # Sitting is intentionally a sharper pose-matching task than walking:
+    # all angular deviation terms are doubled around the sitting target.
+    sit_pose_angle_multiplier = 2.0
 
 
 @configclass
@@ -168,9 +184,32 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     left_foot_offset_from_shin_loc = [0.14,0,0.08]
     right_foot_offset_from_shin_loc = [0.14,0,-0.08]
 
-    # - action scale
-    action_hip_scale = 0.1  # rad per step
-    action_knee_scale = 0.1  # rad per step
+    # Canonical bilateral joint coordinates.
+    canonical_hip_down_angle = 130.0 * math.pi / 180.0
+    canonical_hip_min = -(196.0 - 130.0) * math.pi / 180.0
+    canonical_hip_max = 130.0 * math.pi / 180.0
+    canonical_knee_min = 0.0
+    # The USD authored limit is a few floating-point ulps inside 124 deg.
+    # Keep targets effectively at 124 deg while avoiding a boundary command.
+    canonical_knee_max = 124.0 * math.pi / 180.0 - 1.0e-5
+
+    # Reward/command dimensional proxies.  Runtime observations remain raw
+    # angular positions and angular velocities in radians and rad/s.
+    height_proxy_lever_arm = 1.0  # m
+    longitudinal_velocity_proxy_lever_arm = 1.0  # m
+    standing_base_rotor_angle_target = STANDING_BASE_ROTOR_ANGLE_TARGET
+
+    # Unitree-style direct position action:
+    #     q_target = action_default_target + action_scale * action
+    # The 0.25-rad Unitree G1 scale is kept as a reference, but is too small
+    # for CBR-I's 130/124-deg sitting range, so the active scales are adapted.
+    unitree_reference_action_scale = 0.25  # rad
+    action_default_target = (0.0, 0.0, 0.0, 0.0)  # canonical down/straight pose
+    action_hip_scale = canonical_hip_down_angle  # rad, adapted CBR-I scale
+    action_knee_scale = canonical_knee_max  # rad, adapted CBR-I scale
+
+    # 6 canonical joint positions + 7 raw angular velocities + 2 commands
+    # + 4 last actions.
     # - reward configuration
     rewards: RewardCfg = RewardCfg()
     # - reset states/conditions

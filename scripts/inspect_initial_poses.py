@@ -42,6 +42,9 @@ import isaaclab_tasks  # noqa: F401, E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
 import CBRIIsaacLab.tasks  # noqa: F401, E402
+from CBRIIsaacLab.tasks.direct.cbriisaaclab.coordinate_conventions import (  # noqa: E402
+    raw_actuated_to_canonical,
+)
 from CBRIIsaacLab.tasks.direct.cbriisaaclab.initial_pose_randomization import (  # noqa: E402
     compute_pose_diagnostics,
     sample_ground_safe_initial_pose,
@@ -149,7 +152,10 @@ def _write_frozen_standing_poses(env) -> tuple[torch.Tensor, object]:
 
     # Force the command and all controller state to stand at zero speed.
     unwrapped.command.copy_(sample_initial_commands(NUM_ENVS, unwrapped.cfg, device, mode="stand"))
-    unwrapped.targets[env_ids] = result.joint_pos[:, unwrapped.actuated_dof_indices]
+    unwrapped.targets[env_ids] = raw_actuated_to_canonical(
+        result.joint_pos[:, unwrapped._actuated_dof_indices_tensor],
+        unwrapped.cfg.canonical_hip_down_angle,
+    )
     unwrapped.actions[env_ids] = 0.0
     unwrapped.joint_pos = robot.data.joint_pos.torch
     unwrapped.joint_vel = robot.data.joint_vel.torch

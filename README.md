@@ -155,7 +155,7 @@ VIRTUAL_ENV=/path/to/env_isaaclab ../IsaacLab/isaaclab.sh -p scripts/skrl/train.
     --seed=42
 ```
 
-`max_iterations=1000` means `1000 * rollouts(32) = 32,000` trainer steps. Every run stores
+`max_iterations=1000` means `1000 * rollouts(24) = 24,000` trainer steps. Every run stores
 the environment and PPO configuration, git provenance, checkpoints, TensorBoard event files,
 and the full training trajectory under `logs/skrl/cbr_i_ppo/`. Compare all recorded steps,
 not just the tail of a run.

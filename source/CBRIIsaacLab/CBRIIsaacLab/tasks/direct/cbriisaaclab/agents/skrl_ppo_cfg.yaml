@@ -42,12 +42,12 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 32
-  learning_epochs: 8
-  mini_batches: 8
-  discount_factor: 0.995
+  rollouts: 24
+  learning_epochs: 5
+  mini_batches: 4
+  discount_factor: 0.99
   gae_lambda: 0.95
-  learning_rate: 5.0e-04
+  learning_rate: 1.0e-03
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.008
@@ -71,7 +71,7 @@ agent:
   experiment:
     directory: "cbr_i_ppo"
     experiment_name: ""
-    write_interval: 2000
+    write_interval: 1000
     store_separately: False
     checkpoint_interval: 5000
 
