@@ -65,6 +65,43 @@ class EventCfg:
         },
     )
 
+
+@configclass
+class RewardCfg:
+    """Weights, targets, and thresholds used to compute the task reward."""
+
+    # Common terms
+    termination_penalty_scale = -20.0
+    alive_reward_scale = 0.05
+    action_penalty_scale = -0.001
+    # Penalize abrupt changes in the normalized action between environment steps.
+    action_change_penalty_scale = -0.001
+
+    # Walking terms
+    walk_velocity_error_scale = -1.0
+    walk_joint_velocity_scale = -0.000001
+    walk_body_height_scale = -0.5
+    walk_body_angle_scale = -0.05
+    walk_knee_height_threshold = 0.1
+    walk_low_knee_penalty_scale = -0.1
+    feet_drag_height_decay = 15.0
+    feet_drag_penalty_scale = -0.03
+
+    # Sitting terms
+    sit_body_height_target = 5.2 * math.pi / 180.0
+    sit_body_height_scale = -0.1
+    sit_body_velocity_scale = -0.1
+    sit_body_angle_target = -80.0 * math.pi / 180.0
+    sit_body_angle_scale = -0.05
+    sit_right_hip_angle_target = 0.0
+    sit_left_hip_angle_target = 0.0
+    sit_hip_angle_scale = -0.1
+    sit_right_knee_angle_target = -124.0 * math.pi / 180.0 * 0.99
+    sit_left_knee_angle_target = 124.0 * math.pi / 180.0 * 0.99
+    sit_knee_angle_scale = -0.1
+    sit_reward_scale = 0.5
+
+
 @configclass
 class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # env
@@ -72,7 +109,8 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 25.0
     # - spaces definition
     action_space = 4
-    observation_space = 19
+    # 19 base observations + 4 previous actions used by the smoothness penalty.
+    observation_space = 23
     state_space = 0
 
     phys_sps = 250
@@ -109,8 +147,8 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # - action scale
     action_hip_scale = 0.1  # rad per step
     action_knee_scale = 0.1  # rad per step
-    # - reward scales
-    rew_scale_alive = 1.0
+    # - reward configuration
+    rewards: RewardCfg = RewardCfg()
     # - reset states/conditions
     termination_rod_angle = 8.9 * math.pi / 180.0
     termination_head_height = 0.1
