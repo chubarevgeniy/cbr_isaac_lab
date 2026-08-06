@@ -106,7 +106,6 @@ class RewardCfg:
     # Root/base terms use one-metre beam proxies agreed for CBR-I. Positions
     # and their rates are separate parameters, although both are 1 m here.
     height_proxy_lever_arm = 1.0  # m
-    height_velocity_proxy_lever_arm = 1.0  # m
     walk_base_height_target = -STANDING_BASE_ROTOR_ANGLE_TARGET * height_proxy_lever_arm
     walk_base_height_scale = -5.0
     walk_body_angle_target = 0.0
@@ -207,6 +206,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # Reward/command dimensional proxies.  Runtime observations remain raw
     # angular positions and angular velocities in radians and rad/s.
     height_proxy_lever_arm = 1.0  # m
+    height_velocity_proxy_lever_arm = 1.0  # m
     longitudinal_velocity_proxy_lever_arm = 1.0  # m
     standing_base_rotor_angle_target = STANDING_BASE_ROTOR_ANGLE_TARGET
 
