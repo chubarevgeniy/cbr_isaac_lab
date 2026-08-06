@@ -92,14 +92,23 @@ class RewardCfg:
     joint_velocity_scale = -0.001
     action_rate_scale = -0.05
     joint_position_limits_scale = -5.0
-    joint_deviation_waist_scale = -1.0
-    joint_deviation_legs_scale = -1.0
-    flat_orientation_scale = -5.0
+    # The action-generated target is intentionally not clipped. These are
+    # soft quadratic penalties for asking beyond a joint limit and for
+    # separating the target from the measured joint position.
+    action_target_limits_scale = -0.5
+    action_target_error_scale = -0.01
+    # Walking/standing pose terms. Sitting keeps the previous absolute
+    # strength through its angular multiplier of 2.0 and separate height scale.
+    joint_deviation_waist_scale = -0.5
+    joint_deviation_legs_scale = -0.5
+    flat_orientation_scale = -2.5
 
-    # Root/base terms use the one-metre beam proxies agreed for CBR-I.
+    # Root/base terms use one-metre beam proxies agreed for CBR-I. Positions
+    # and their rates are separate parameters, although both are 1 m here.
     height_proxy_lever_arm = 1.0  # m
+    height_velocity_proxy_lever_arm = 1.0  # m
     walk_base_height_target = -STANDING_BASE_ROTOR_ANGLE_TARGET * height_proxy_lever_arm
-    walk_base_height_scale = -10.0
+    walk_base_height_scale = -5.0
     walk_body_angle_target = 0.0
 
     # Sitting terms.  Height is represented by the negative beam angle and a
@@ -203,12 +212,14 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # Unitree-style direct position action:
     #     q_target = action_default_target + action_scale * action
+    # The raw policy action and resulting target are not clipped. Joint-limit
+    # violations are handled as soft reward penalties instead.
     # The 0.25-rad Unitree G1 scale is kept as a reference, but is too small
     # for CBR-I's 130/124-deg sitting range, so the active scales are adapted.
     unitree_reference_action_scale = 0.25  # rad
     action_default_target = (0.0, 0.0, 0.0, 0.0)  # canonical down/straight pose
-    action_hip_scale = canonical_hip_down_angle  # rad, adapted CBR-I scale
-    action_knee_scale = canonical_knee_max  # rad, adapted CBR-I scale
+    action_hip_scale = 0.5 * canonical_hip_down_angle  # rad, 65 deg per action unit
+    action_knee_scale = 0.5 * canonical_knee_max  # rad, 62 deg per action unit
 
     # 6 canonical joint positions + 7 raw angular velocities + 2 commands
     # + 4 last actions.

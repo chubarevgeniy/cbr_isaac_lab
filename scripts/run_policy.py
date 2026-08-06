@@ -417,11 +417,9 @@ class CBRIPolicyRunner:
         ], dim=-1).float()
 
     def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
-        """Convert normalized actions to direct canonical joint-position targets."""
+        """Convert raw actions to direct canonical joint-position targets."""
 
-        actions = actions.clamp(-1, 1)
-        targets = self._canonical_action_offset + actions * self._canonical_action_scale
-        return torch.maximum(torch.minimum(targets, self._canonical_target_max), self._canonical_target_min)
+        return self._canonical_action_offset + actions * self._canonical_action_scale
 
     def apply_actions(self, actions):
         self.actions = actions.clone()

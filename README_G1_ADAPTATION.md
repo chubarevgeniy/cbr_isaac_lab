@@ -47,10 +47,12 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
           -0.001 * sum(joint_velocity^2)
           -0.05 * sum((action - previous_action)^2)
           -5.0 * joint_position_limit_violation
-          -1.0 * |body_angle|
-          -1.0 * sum(|canonical_joint_position|)
-          -5.0 * body_angle^2
-          -10.0 * (body_height - 0.1309)^2
+          -0.5 * |body_angle|
+          -0.5 * sum(|canonical_joint_position|)
+          -2.5 * body_angle^2
+          -5.0 * (body_height - 0.1309)^2
+          -0.5 * sum(target_limit_violation^2)
+          -0.01 * sum((target - current_joint_position)^2)
 ```
 
 Здесь policy/reward-контракт теперь такой:
@@ -62,7 +64,8 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
 - все angular velocities в observation остаются raw в `rad/s`;
 - `qdot(bottom_rotor_Revolute_2)` остаётся raw в observation и является
   вертикальной скоростью-прокси `-1 m * qdot` для аналога Unitree
-  `base_linear_velocity`;
+  `base_linear_velocity`; в reward это явно умножается на
+  `height_velocity_proxy_lever_arm = 1 m`;
 - `qdot(rod_1_Revolute_3)` используется как угловая скорость корпуса-прокси;
 - `action_rate` сравнивает текущий и предыдущий action, как в Unitree.
 - `joint_acc`, `applied_torque`, gait, foot clearance, foot slide и contacts
@@ -119,9 +122,11 @@ affine-преобразование:
 target_canonical = action_default_target + action_scale * action
 ```
 
-где `action ∈ [-1, 1]`, `action_default_target = [0, 0, 0, 0]`, а scale
-адаптирован к диапазонам CBR-I: `130°` для hip и `124°` для knee. Затем target
-переводится обратно в raw USD-знаки перед `set_joint_position_target`.
+где action передаётся без клипирования, `action_default_target = [0, 0, 0, 0]`,
+а scale уменьшен до `65°` для hip и `62°` для knee на единицу action. Поэтому
+action `1` больше не покрывает весь диапазон сустава. Target переводится
+обратно в raw USD-знаки перед `set_joint_position_target`; превышение лимитов
+штрафуется отдельно.
 Четыре target-поля старого delta-контракта заменены в observation на четыре
 компоненты текущего `last_action`, как в конфигурации Unitree G1. Reference
 Unitree scale `0.25 rad` сохранён в конфиге для отдельного сравнительного
@@ -161,13 +166,13 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | `joint_vel` | `-0.001` | L2 penalty скоростей суставов | `-0.001 * sum(qvel²)` для 4 hip/knee | Перенесено |
 | `joint_acc` | `-2.5e-7` | плавность/ускорения суставов | Нет: `joint_acc` намеренно не читается | Не переносится |
 | `action_rate` | `-0.05` | изменение action между шагами | `-0.05 * sum((a_t-a_{t-1})²)` | Перенесено |
-| `dof_pos_limits` | `-5.0` | приближение к пределам суставов | текущая физическая позиция вне soft limits получает штраф, action target дополнительно clamp-ится | Адаптировано |
+| `dof_pos_limits` | `-5.0` | приближение к пределам суставов | текущая физическая позиция вне soft limits получает штраф; raw action target получает отдельный quadratic limit penalty `-0.5` | Адаптировано |
 | `energy` | `-2e-5` | `|joint velocity| * |applied torque|` | Нет: `applied_torque` намеренно не читается | Не переносится |
 | `joint_deviation_arms` | `-0.1` | удержание рук около default pose | Нет рук в текущей модели | Не переносить |
-| `joint_deviation_waists` | `-1.0` | отклонение waist joints от default | `-|body_angle-target|` | Адаптировано; sitting target и multiplier `2.0` |
-| `joint_deviation_legs` | `-1.0` | отклонение leg joints от default | `-sum(|canonical joint-target|)` | Адаптировано для 4 hip/knee |
-| `flat_orientation_l2` | `-5.0` | upright orientation корпуса | `-(body_angle-target)²` | Угловой proxy; sitting target заменяет upright |
-| `base_height` | `-10.0`, target `0.78 m` | высота root корпуса | `-10.0 * (body_height - 0.1309)^2`, где `body_height = -1 m * q_beam` | Адаптировано: target вычислен FK, это height-прокси, не root height |
+| `joint_deviation_waists` | `-1.0` | отклонение waist joints от default | `-0.5*|body_angle-target|` для walking; sitting multiplier `2.0` | Адаптировано |
+| `joint_deviation_legs` | `-1.0` | отклонение leg joints от default | `-0.5*sum(|canonical joint-target|)` для walking; sitting multiplier `2.0` | Адаптировано для 4 hip/knee |
+| `flat_orientation_l2` | `-5.0` | upright orientation корпуса | `-2.5*(body_angle-target)²` для walking; sitting multiplier `2.0` | Угловой proxy; sitting target заменяет upright |
+| `base_height` | `-10.0`, target `0.78 m` | высота root корпуса | `-5.0 * (body_height - 0.1309)^2` для walking, где `body_height = -1 m * q_beam` | Адаптировано: target вычислен FK, это height-прокси, не root height |
 | `gait` | `+0.5` | фазовое соответствие контактов стоп | Нет: контактный сенсор не создаётся | Не переносится |
 | `feet_slide` | `-0.2` | горизонтальное скольжение контактирующей стопы | Нет отдельного contact-gated терма | Не переносится |
 | `feet_clearance` | `+1.0`, target `0.1 m` | подъём swing foot до целевой высоты | Нет foot/contact reward | Не переносится |

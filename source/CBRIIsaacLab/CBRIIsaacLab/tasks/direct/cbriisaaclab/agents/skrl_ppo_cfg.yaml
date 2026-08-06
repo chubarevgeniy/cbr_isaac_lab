@@ -8,7 +8,8 @@ models:
   policy:  # see gaussian_model parameters
     class: GaussianMixin
     # Isaac Lab's integer action-space specification is unbounded in skrl 2.1.
-    # The environment clamps actions to [-1, 1] before scaling them.
+    # Raw actions are passed to the environment and converted directly into
+    # position targets; target-limit violations are penalized by the reward.
     clip_actions: False
     clip_log_std: True
     min_log_std: -20.0

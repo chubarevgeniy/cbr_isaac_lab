@@ -170,11 +170,9 @@ class CbriisaaclabEnv(DirectRLEnv):
         return canonical_actuated_to_raw(canonical, self.cfg.canonical_hip_down_angle)
 
     def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
-        """Convert normalized actions to direct canonical joint-position targets."""
+        """Convert raw actions to direct canonical joint-position targets."""
 
-        actions = actions.clamp(-1.0, 1.0)
-        targets = self._canonical_action_offset + actions * self._canonical_action_scale
-        return torch.maximum(torch.minimum(targets, self._canonical_target_max), self._canonical_target_min)
+        return self._canonical_action_offset + actions * self._canonical_action_scale
 
     def _setup_scene(self):
         # Initialize the robot
@@ -521,7 +519,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         body_vertical_vel = (
             -self.joint_vel[:, self.rotor_rod_dof_name_idx]
-            * self.cfg.height_proxy_lever_arm
+            * self.cfg.height_velocity_proxy_lever_arm
         )
         body_angle = self.joint_pos[:, self.rod_body_dof_name_idx]
         body_angular_vel = self.joint_vel[:, self.rod_body_dof_name_idx]
@@ -535,6 +533,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             (raw_actuated_joint_limits[..., 0] - raw_actuated_joint_pos).clamp_min(0.0)
             + (raw_actuated_joint_pos - raw_actuated_joint_limits[..., 1]).clamp_min(0.0)
         ).sum(dim=-1)
+        target_joint_limit_violation = (
+            (self._canonical_target_min - self.targets).clamp_min(0.0)
+            + (self.targets - self._canonical_target_max).clamp_min(0.0)
+        )
 
         right_hip_angle = actuated_joint_pos[:, 0:1]
         left_hip_angle = actuated_joint_pos[:, 1:2]
@@ -561,6 +563,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             actuated_joint_pos=actuated_joint_pos,
             actuated_joint_vel=actuated_joint_vel,
             joint_pos_limits=joint_pos_limits,
+            target_joint_pos=self.targets,
+            target_joint_limit_violation=target_joint_limit_violation,
             reset_terminated=self.reset_terminated,
             command=command,
             actions=self.actions,
@@ -573,6 +577,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             joint_velocity_scale=self.cfg.rewards.joint_velocity_scale,
             action_rate_scale=self.cfg.rewards.action_rate_scale,
             joint_position_limits_scale=self.cfg.rewards.joint_position_limits_scale,
+            action_target_limits_scale=self.cfg.rewards.action_target_limits_scale,
+            action_target_error_scale=self.cfg.rewards.action_target_error_scale,
             joint_deviation_waist_scale=self.cfg.rewards.joint_deviation_waist_scale,
             joint_deviation_legs_scale=self.cfg.rewards.joint_deviation_legs_scale,
             flat_orientation_scale=self.cfg.rewards.flat_orientation_scale,
@@ -622,7 +628,8 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         with torch.no_grad():
             raw_actions = self.actions
-            clipped_actions = raw_actions.clamp(-1.0, 1.0)
+            # Reference only: this clipped copy is not used for control or reward.
+            clipped_actions_reference = raw_actions.clamp(-1.0, 1.0)
             canonical_action_target = self._actions_to_canonical_targets(raw_actions)
             unnoisy_joint_state = self._raw_to_canonical_actuated(
                 self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
@@ -631,7 +638,7 @@ class CbriisaaclabEnv(DirectRLEnv):
 
             distributions = {
                 "action/raw": raw_actions,
-                "action/clipped": clipped_actions,
+                "action/clipped_reference": clipped_actions_reference,
                 "action/target_canonical": canonical_action_target,
                 "target/canonical": self.targets,
                 "target/error_to_unnoisy_joint": target_error,
@@ -906,6 +913,8 @@ def compute_rewards(
     actuated_joint_pos: torch.Tensor,
     actuated_joint_vel: torch.Tensor,
     joint_pos_limits: torch.Tensor,
+    target_joint_pos: torch.Tensor,
+    target_joint_limit_violation: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
@@ -918,6 +927,8 @@ def compute_rewards(
     joint_velocity_scale: float,
     action_rate_scale: float,
     joint_position_limits_scale: float,
+    action_target_limits_scale: float,
+    action_target_error_scale: float,
     joint_deviation_waist_scale: float,
     joint_deviation_legs_scale: float,
     flat_orientation_scale: float,
@@ -985,6 +996,14 @@ def compute_rewards(
     common_reward += torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
     common_reward += torch.sum(torch.square(actions - previous_actions), dim=-1) * action_rate_scale
     common_reward += joint_pos_limits * joint_position_limits_scale
+    common_reward += (
+        torch.sum(torch.square(target_joint_limit_violation), dim=-1)
+        * action_target_limits_scale
+    )
+    common_reward += (
+        torch.sum(torch.square(target_joint_pos - actuated_joint_pos), dim=-1)
+        * action_target_error_scale
+    )
 
     # Unitree track_lin_vel_xy_exp reduced to the one available longitudinal
     # speed proxy. Sitting is the same stand-still command with v_target=0.
