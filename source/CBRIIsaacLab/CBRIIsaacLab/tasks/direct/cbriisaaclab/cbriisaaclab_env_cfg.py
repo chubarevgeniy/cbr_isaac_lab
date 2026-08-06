@@ -77,10 +77,9 @@ class EventCfg:
 class RewardCfg:
     """Weights, targets, and thresholds used to compute the task reward."""
 
-    # Unitree common term.  Unitree does not add a separate death reward:
-    # termination only ends the episode, while ``alive`` is paid on non-
-    # terminated steps.
+    # Living/death terms. The explicit death term is a CBR-I adaptation.
     alive_reward_scale = 0.15
+    death_reward_scale = -200.0
 
     # Unitree G1 terms adapted to the available CBR-I signals.
     # The one-dimensional analogue of Unitree's track_lin_vel_xy uses the
@@ -97,6 +96,10 @@ class RewardCfg:
     # separating the target from the measured joint position.
     action_target_limits_scale = -0.5
     action_target_error_scale = -0.01
+    # Penalize horizontal foot motion near the ground. The exponential uses
+    # the actual foot height in meters and is active outside sitting mode.
+    foot_slip_scale = -0.2
+    foot_slip_height_scale = 0.05  # m
     # Walking/standing pose terms. Sitting keeps the previous absolute
     # strength through its angular multiplier of 2.0 and separate height scale.
     joint_deviation_waist_scale = -0.5

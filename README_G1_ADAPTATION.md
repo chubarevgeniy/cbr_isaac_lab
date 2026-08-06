@@ -35,7 +35,7 @@ CBR-I direct-среда с четырьмя управляемыми суста�
 слагаемые:
 
 ```text
-R = R_mode + R_alive + R_stability + R_pose
+R = R_mode + R_alive + R_death + R_stability + R_pose
 ```
 
 Для walking `R_mode` и применимые Unitree-термы имеют следующий вид:
@@ -53,6 +53,7 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
           -5.0 * (body_height - 0.1309)^2
           -0.5 * sum(target_limit_violation^2)
           -0.01 * sum((target - current_joint_position)^2)
+          -0.2 * sum(horizontal_foot_speed * exp(-foot_height / 0.05))
 ```
 
 Здесь policy/reward-контракт теперь такой:
@@ -68,9 +69,10 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
   `height_velocity_proxy_lever_arm = 1 m`;
 - `qdot(rod_1_Revolute_3)` используется как угловая скорость корпуса-прокси;
 - `action_rate` сравнивает текущий и предыдущий action, как в Unitree.
-- `joint_acc`, `applied_torque`, gait, foot clearance, foot slide и contacts
-  намеренно не участвуют в reward: для implicit actuator и текущей геометрии
-  CBR-I мы не вводим эти дополнительные сигналы и сенсоры.
+- `joint_acc`, `applied_torque`, gait, foot clearance и contact-gated foot
+  slide намеренно не участвуют в reward. Добавлен эвристический near-ground
+  foot-motion term без контактного сенсора:
+  `-0.2 * sum(horizontal_foot_speed * exp(-foot_height / 0.05))`.
 
 Для walking теперь используется Unitree-подобный exp-трекинг одной
 продольной скорости:
@@ -143,7 +145,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 
 | Слагаемое | Настройка | Фактический смысл |
 | --- | ---: | --- |
-| termination | нет | termination только завершает эпизод, отдельного death penalty нет |
+| termination | нет | termination только завершает эпизод; CBR-I добавляет `-200.0` за падение, timeout не штрафуется |
 | alive | `+0.15` | `+0.15` на живом шаге, как у Unitree |
 | action rate | `-0.05` | `-0.05 * sum((action - previous_action)²)` |
 | sitting angular multiplier | `2.0` | усиливает соответствие body/hip/knee targets |
@@ -174,7 +176,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | `flat_orientation_l2` | `-5.0` | upright orientation корпуса | `-2.5*(body_angle-target)²` для walking; sitting multiplier `2.0` | Угловой proxy; sitting target заменяет upright |
 | `base_height` | `-10.0`, target `0.78 m` | высота root корпуса | `-5.0 * (body_height - 0.1309)^2` для walking, где `body_height = -1 m * q_beam` | Адаптировано: target вычислен FK, это height-прокси, не root height |
 | `gait` | `+0.5` | фазовое соответствие контактов стоп | Нет: контактный сенсор не создаётся | Не переносится |
-| `feet_slide` | `-0.2` | горизонтальное скольжение контактирующей стопы | Нет отдельного contact-gated терма | Не переносится |
+| `feet_slide` | `-0.2` | горизонтальное скольжение контактирующей стопы | near-ground эвристика `-0.2*speed*exp(-height/0.05)`, без contact gating | Адаптировано |
 | `feet_clearance` | `+1.0`, target `0.1 m` | подъём swing foot до целевой высоты | Нет foot/contact reward | Не переносится |
 | `undesired_contacts` | `-1.0` | контакт корпуса/не-стоп с землёй | Нет контактного сенсора | Не переносится |
 

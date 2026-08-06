@@ -552,6 +552,16 @@ class CbriisaaclabEnv(DirectRLEnv):
         right_foot_location = self._get_right_foot_location()[0]
         left_foot_vel = self._get_left_foot_velocity()
         right_foot_vel = self._get_right_foot_velocity()
+        foot_height = torch.stack(
+            (left_foot_location[:, 2], right_foot_location[:, 2]), dim=-1
+        )
+        foot_horizontal_speed = torch.stack(
+            (
+                torch.linalg.vector_norm(left_foot_vel[:, :2], dim=-1),
+                torch.linalg.vector_norm(right_foot_vel[:, :2], dim=-1),
+            ),
+            dim=-1,
+        )
         command = self.command[:, [0, 4]]
 
         rewards = compute_rewards(
@@ -565,11 +575,14 @@ class CbriisaaclabEnv(DirectRLEnv):
             joint_pos_limits=joint_pos_limits,
             target_joint_pos=self.targets,
             target_joint_limit_violation=target_joint_limit_violation,
+            foot_height=foot_height,
+            foot_horizontal_speed=foot_horizontal_speed,
             reset_terminated=self.reset_terminated,
             command=command,
             actions=self.actions,
             previous_actions=self.previous_actions,
             alive_reward_scale=self.cfg.rewards.alive_reward_scale,
+            death_reward_scale=self.cfg.rewards.death_reward_scale,
             walk_velocity_tracking_scale=self.cfg.rewards.walk_velocity_tracking_scale,
             walk_velocity_tracking_std=self.cfg.rewards.walk_velocity_tracking_std,
             base_vertical_velocity_scale=self.cfg.rewards.base_vertical_velocity_scale,
@@ -579,6 +592,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             joint_position_limits_scale=self.cfg.rewards.joint_position_limits_scale,
             action_target_limits_scale=self.cfg.rewards.action_target_limits_scale,
             action_target_error_scale=self.cfg.rewards.action_target_error_scale,
+            foot_slip_scale=self.cfg.rewards.foot_slip_scale,
+            foot_slip_height_scale=self.cfg.rewards.foot_slip_height_scale,
             joint_deviation_waist_scale=self.cfg.rewards.joint_deviation_waist_scale,
             joint_deviation_legs_scale=self.cfg.rewards.joint_deviation_legs_scale,
             flat_orientation_scale=self.cfg.rewards.flat_orientation_scale,
@@ -915,11 +930,14 @@ def compute_rewards(
     joint_pos_limits: torch.Tensor,
     target_joint_pos: torch.Tensor,
     target_joint_limit_violation: torch.Tensor,
+    foot_height: torch.Tensor,
+    foot_horizontal_speed: torch.Tensor,
     reset_terminated: torch.Tensor,
     command: torch.Tensor,
     actions: torch.Tensor,
     previous_actions: torch.Tensor,
     alive_reward_scale: float,
+    death_reward_scale: float,
     walk_velocity_tracking_scale: float,
     walk_velocity_tracking_std: float,
     base_vertical_velocity_scale: float,
@@ -929,6 +947,8 @@ def compute_rewards(
     joint_position_limits_scale: float,
     action_target_limits_scale: float,
     action_target_error_scale: float,
+    foot_slip_scale: float,
+    foot_slip_height_scale: float,
     joint_deviation_waist_scale: float,
     joint_deviation_legs_scale: float,
     flat_orientation_scale: float,
@@ -986,11 +1006,11 @@ def compute_rewards(
         is_sitting_command, torch.zeros_like(command[:, 1]), command[:, 1]
     )
 
-    # Common Unitree-style reward terms.  There is intentionally no separate
-    # death/termination penalty: Unitree terminates the episode and only pays
-    # the alive term on non-terminated steps.
+    # Common reward terms. CBR-I additionally assigns an explicit penalty to
+    # terminal deaths; timeouts are not included in reset_terminated.
     alive_reward = (1.0 - reset_terminated.float()) * alive_reward_scale
-    common_reward = alive_reward
+    death_reward = reset_terminated.float() * death_reward_scale
+    common_reward = alive_reward + death_reward
     common_reward += torch.square(body_vertical_vel_value) * base_vertical_velocity_scale
     common_reward += torch.square(body_angular_vel_value) * base_angular_velocity_scale
     common_reward += torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
@@ -1004,6 +1024,12 @@ def compute_rewards(
         torch.sum(torch.square(target_joint_pos - actuated_joint_pos), dim=-1)
         * action_target_error_scale
     )
+    foot_ground_weight = torch.exp(-foot_height / foot_slip_height_scale)
+    foot_slip_penalty = torch.sum(
+        foot_ground_weight * foot_horizontal_speed, dim=-1
+    )
+    foot_slip_penalty *= (~is_sitting_command).to(dtype=foot_slip_penalty.dtype)
+    common_reward += foot_slip_penalty * foot_slip_scale
 
     # Unitree track_lin_vel_xy_exp reduced to the one available longitudinal
     # speed proxy. Sitting is the same stand-still command with v_target=0.
