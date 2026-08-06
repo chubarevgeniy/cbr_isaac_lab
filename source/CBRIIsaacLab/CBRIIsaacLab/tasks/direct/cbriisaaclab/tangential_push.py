@@ -14,7 +14,7 @@ from isaaclab.utils.math import quat_apply
 def push_body_tangential_impulse(
     env,
     env_ids: torch.Tensor | None,
-    velocity_change_range: tuple[float, float],
+    velocity_change_magnitude_range: tuple[float, float],
     disturbed_mass_kg: float,
     rotor_body_name: str,
     rotor_axis_local: tuple[float, float, float],
@@ -83,11 +83,17 @@ def push_body_tangential_impulse(
     tangent_w = torch.cross(rotor_axis_w, radius_tangent_plane_w, dim=-1)
     tangent_w = tangent_w / torch.linalg.vector_norm(tangent_w, dim=-1, keepdim=True).clamp_min(1.0e-6)
 
-    velocity_change = torch.empty(
+    velocity_change_magnitude = torch.empty(
         (env_ids.numel(), 1),
         device=asset.device,
         dtype=body_com_pos_w.dtype,
-    ).uniform_(*velocity_change_range)
+    ).uniform_(*velocity_change_magnitude_range)
+    velocity_change_sign = torch.where(
+        torch.rand_like(velocity_change_magnitude) < 0.5,
+        -torch.ones_like(velocity_change_magnitude),
+        torch.ones_like(velocity_change_magnitude),
+    )
+    velocity_change = velocity_change_magnitude * velocity_change_sign
     impulse = velocity_change * float(disturbed_mass_kg)
     force_w = tangent_w * (impulse / float(env.physics_dt)).unsqueeze(-1)
 

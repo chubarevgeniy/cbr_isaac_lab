@@ -78,9 +78,10 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
   закреплён, поэтому в толчке не участвует. Направление вычисляется как
   `tangent = normalize(axis × (body_com - rotor_pivot))` для
   `Rock_Revolute_1`, поэтому радиальная и осевая составляющие равны нулю.
-  Диапазон эквивалентного скачка скорости `±0.5 m/s` нормирован на 5 kg:
-  импульс составляет до `±2.5 N*s` и прикладывается через instantaneous
-  wrench за один physics step.
+  Модуль эквивалентного скачка скорости равномерно выбирается из
+  `[0.2, 0.6] m/s` с независимым знаком, то есть слабые толчки исключены.
+  Для 5 kg это импульс `1.0…3.0 N*s` по модулю, прикладываемый через
+  instantaneous wrench за один physics step.
 
 Для walking теперь используется Unitree-подобный exp-трекинг одной
 продольной скорости:
@@ -197,7 +198,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | `time_out` при episode length `20 s` | `episode_length_s = 25 s` |
 | падение при root height `< 0.2 m` | падение при `head height < 0.1 m` |
 | bad orientation при угле `> 0.8 rad` | `rotor_rod > 8.9°` |
-| push каждые `5 s`, mass/friction randomization, terrain curriculum | push каждые `5 s` тангенциальным импульсом по `body` (`±0.5 m/s` эквивалентно для 5 kg), плюс свои randomization friction/gain/gravity и randomized начальные позы |
+| push каждые `5 s`, mass/friction randomization, terrain curriculum | push каждые `5 s` тангенциальным импульсом по `body` (`|Δv|=0.2…0.6 m/s` для 5 kg), плюс свои randomization friction/gain/gravity и randomized начальные позы |
 
 ## Что имеет смысл адаптировать первым
 

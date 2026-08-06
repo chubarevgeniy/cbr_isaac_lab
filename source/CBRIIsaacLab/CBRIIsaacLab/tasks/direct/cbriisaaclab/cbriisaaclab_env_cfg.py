@@ -81,7 +81,9 @@ class EventCfg:
         mode="interval",
         interval_range_s=(5.0, 5.0),
         params={
-            "velocity_change_range": (-0.5, 0.5),
+            # Equivalent to remapping |v| in [0.0, 0.5] to [0.2, 0.6]
+            # while sampling the tangent direction sign independently.
+            "velocity_change_magnitude_range": (0.2, 0.6),
             "disturbed_mass_kg": 5.0,
             "rotor_body_name": "Rock",
             "rotor_axis_local": (0.0, 0.0, 1.0),
