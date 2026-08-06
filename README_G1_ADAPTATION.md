@@ -73,6 +73,14 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
   slide намеренно не участвуют в reward. Добавлен эвристический near-ground
   foot-motion term без контактного сенсора:
   `-0.2 * sum(horizontal_foot_speed * exp(-foot_height / 0.05))`.
+- Disturbance оставлен с Unitree-интервалом 5 s, но root kick заменён на
+  одношаговый импульс только для подвижного `body`. `Rock` массой 20 kg
+  закреплён, поэтому в толчке не участвует. Направление вычисляется как
+  `tangent = normalize(axis × (body_com - rotor_pivot))` для
+  `Rock_Revolute_1`, поэтому радиальная и осевая составляющие равны нулю.
+  Диапазон эквивалентного скачка скорости `±0.5 m/s` нормирован на 5 kg:
+  импульс составляет до `±2.5 N*s` и прикладывается через instantaneous
+  wrench за один physics step.
 
 Для walking теперь используется Unitree-подобный exp-трекинг одной
 продольной скорости:
@@ -189,7 +197,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | `time_out` при episode length `20 s` | `episode_length_s = 25 s` |
 | падение при root height `< 0.2 m` | падение при `head height < 0.1 m` |
 | bad orientation при угле `> 0.8 rad` | `rotor_rod > 8.9°` |
-| push каждые `5 s`, mass/friction randomization, terrain curriculum | свои randomization friction/gain/gravity и randomized начальные позы |
+| push каждые `5 s`, mass/friction randomization, terrain curriculum | push каждые `5 s` тангенциальным импульсом по `body` (`±0.5 m/s` эквивалентно для 5 kg), плюс свои randomization friction/gain/gravity и randomized начальные позы |
 
 ## Что имеет смысл адаптировать первым
 

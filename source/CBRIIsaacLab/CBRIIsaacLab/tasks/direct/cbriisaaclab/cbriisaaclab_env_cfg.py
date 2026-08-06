@@ -14,6 +14,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils.configclass import configclass
 
 from CBRIIsaacLab.robots.CBRI import CBR_I_CONFIG
+from .tangential_push import push_body_tangential_impulse
 
 joint_names = [
     "body_Revolute_4",  # body_right_hip
@@ -69,6 +70,23 @@ class EventCfg:
             "gravity_distribution_params": ([0.0, 0.0, -0.1], [0.0, 0.0, 0.1]),
             "operation": "add",
             "distribution": "gaussian",
+        },
+    )
+    # Unitree G1-style disturbance every 5 s, adapted to the fixed-base CBR-I
+    # geometry.  Rock (20 kg) is bolted to the world, so only the moving body
+    # receives the impulse.  The force direction is recomputed as the tangent
+    # around Rock_Revolute_1; no radial or axial component is injected.
+    push_robot = EventTerm(
+        func=push_body_tangential_impulse,
+        mode="interval",
+        interval_range_s=(5.0, 5.0),
+        params={
+            "velocity_change_range": (-0.5, 0.5),
+            "disturbed_mass_kg": 5.0,
+            "rotor_body_name": "Rock",
+            "rotor_axis_local": (0.0, 0.0, 1.0),
+            "rotor_pivot_offset_local": (0.0, 0.0, 0.11),
+            "asset_cfg": SceneEntityCfg("robot", body_names=["body"]),
         },
     )
 
