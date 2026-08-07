@@ -118,7 +118,7 @@ class RewardCfg:
     action_target_error_scale = -0.01
     # Penalize horizontal foot motion near the ground. The exponential uses
     # the actual foot height in meters and is active outside sitting mode.
-    foot_slip_scale = -0.2
+    foot_slip_scale = -0.5
     foot_slip_height_scale = 0.05  # m
     # Walking/standing pose terms. Sitting keeps the previous absolute
     # strength through its angular multiplier of 2.0 and separate height scale.
