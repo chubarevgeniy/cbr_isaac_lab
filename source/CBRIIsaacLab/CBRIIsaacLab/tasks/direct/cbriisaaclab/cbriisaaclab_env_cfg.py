@@ -104,7 +104,7 @@ class RewardCfg:
     # Unitree G1 terms adapted to the available CBR-I signals.
     # The one-dimensional analogue of Unitree's track_lin_vel_xy uses the
     # same exp-kernel and std=sqrt(0.25)=0.5, with the beam-rate proxy as v.
-    walk_velocity_tracking_scale = 1.0
+    walk_velocity_tracking_scale = 5.0
     walk_velocity_tracking_std = math.sqrt(0.25)
     base_vertical_velocity_scale = -2.0
     base_angular_velocity_scale = -0.05
