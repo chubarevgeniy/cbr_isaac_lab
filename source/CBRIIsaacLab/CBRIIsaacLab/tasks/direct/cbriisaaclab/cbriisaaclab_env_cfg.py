@@ -46,6 +46,11 @@ def _make_uneven_ground_cfg() -> RigidObjectCollectionCfg:
         disable_gravity=True,
     )
     collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+    physics_material = sim_utils.PhysxRigidBodyMaterialCfg(
+        static_friction=0.8,
+        dynamic_friction=0.8,
+        restitution=0.0,
+    )
     visual_material = sim_utils.PreviewSurfaceCfg(
         diffuse_color=(0.32, 0.24, 0.14),
         roughness=0.95,
@@ -63,6 +68,7 @@ def _make_uneven_ground_cfg() -> RigidObjectCollectionCfg:
                 size=bump_size,
                 rigid_props=rigid_props,
                 collision_props=collision_props,
+                physics_material=physics_material,
                 visual_material=visual_material,
             ),
         )
