@@ -99,7 +99,7 @@ class RewardCfg:
 
     # Living/death terms. The explicit death term is a CBR-I adaptation.
     alive_reward_scale = 0.15
-    death_reward_scale = -200.0
+    death_reward_scale = -50.0
 
     # Unitree G1 terms adapted to the available CBR-I signals.
     # The one-dimensional analogue of Unitree's track_lin_vel_xy uses the
