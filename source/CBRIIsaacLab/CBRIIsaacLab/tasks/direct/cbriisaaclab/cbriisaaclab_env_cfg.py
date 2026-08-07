@@ -5,7 +5,8 @@
 
 import math
 
-from isaaclab.assets import ArticulationCfg
+import isaaclab.sim as sim_utils
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg, RigidObjectCollectionCfg
 from isaaclab.envs import DirectRLEnvCfg, mdp
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
@@ -27,6 +28,46 @@ joint_names = [
 # canonical hips/knees = [0, 0, 0, 0], body tilt = 0 deg.  At -7.0 deg one
 # shin still enters the floor; -7.5 deg is the first safe 0.5-deg grid point.
 STANDING_BASE_ROTOR_ANGLE_TARGET = -7.5 * math.pi / 180.0
+
+
+def _make_uneven_ground_cfg() -> RigidObjectCollectionCfg:
+    """Create the sparse static bump collection used by the CBR-I task.
+
+    The collection is spawned in ``env_0`` and cloned together with the rest of
+    the direct-workflow scene. The environment moves the kinematic bodies to a
+    new layout on reset, so the authored initial positions only need to be well
+    away from the robot until the first reset is performed.
+    """
+
+    bump_height = 0.02
+    bump_size = (0.10, 0.10, bump_height)
+    rigid_props = sim_utils.RigidBodyPropertiesCfg(
+        kinematic_enabled=True,
+        disable_gravity=True,
+    )
+    collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+    visual_material = sim_utils.PreviewSurfaceCfg(
+        diffuse_color=(0.32, 0.24, 0.14),
+        roughness=0.95,
+    )
+
+    rigid_objects = {}
+    for bump_index in range(4):
+        # The template is outside the robot's reset annulus. Runtime reset
+        # randomization replaces this position in every selected environment.
+        template_pos = (1.8 + 0.14 * bump_index, 1.8, bump_height * 0.5)
+        rigid_objects[f"bump_{bump_index}"] = RigidObjectCfg(
+            prim_path=f"/World/envs/env_.*/UnevenGroundBump_{bump_index}",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=template_pos),
+            spawn=sim_utils.CuboidCfg(
+                size=bump_size,
+                rigid_props=rigid_props,
+                collision_props=collision_props,
+                visual_material=visual_material,
+            ),
+        )
+    return RigidObjectCollectionCfg(rigid_objects=rigid_objects)
+
 
 @configclass
 class EventCfg:
@@ -174,6 +215,18 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=4.0, replicate_physics=True)
+
+    # Sparse uneven ground. The first curriculum level is intentionally mild:
+    # four 10 cm square bumps, each 2 cm high, in the annulus where the feet
+    # normally travel around the fixed rotor. Positions are randomized per
+    # environment reset in the environment implementation.
+    uneven_ground_enabled = True
+    uneven_ground_cfg: RigidObjectCollectionCfg = _make_uneven_ground_cfg()
+    uneven_ground_radial_range = (0.75, 1.35)  # m from the rotor pivot
+    uneven_ground_min_distance_to_robot = 0.18  # m at reset
+    uneven_ground_min_distance_between_bumps = 0.18  # m
+    uneven_ground_resample_attempts = 20
+    uneven_ground_bump_height = 0.02  # m; later curriculum level can use 0.03
 
     # custom parameters/scales
     # - controllable joint

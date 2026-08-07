@@ -10,7 +10,7 @@ import math
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObjectCollection
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
@@ -41,6 +41,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.right_hip_shin_dof_name_idx, _ = self.robot.find_joints(self.cfg.right_hip_shin_dof_name)
         self.left_hip_shin_dof_name_idx, _ = self.robot.find_joints(self.cfg.left_hip_shin_dof_name)
         self.body_idx,_ = self.robot.find_bodies('body')
+        self.rock_idx,_ = self.robot.find_bodies('Rock')
         self.left_hip_idx,_ = self.robot.find_bodies('left_hip')
         self.right_hip_idx,_ = self.robot.find_bodies('right_hip')
         self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
@@ -178,6 +179,13 @@ class CbriisaaclabEnv(DirectRLEnv):
         # Initialize the robot
         self.robot = Articulation(self.cfg.robot_cfg)
 
+        # Sparse, kinematic cuboids are cloned with the environments and moved
+        # to a new layout at every reset. They are registered in the scene so
+        # the common scene reset/write/update lifecycle also handles them.
+        self.uneven_ground = None
+        if self.cfg.uneven_ground_enabled:
+            self.uneven_ground = RigidObjectCollection(self.cfg.uneven_ground_cfg)
+
         # Add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
 
@@ -187,6 +195,8 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         # Add robot to the scene
         self.scene.articulations["robot"] = self.robot
+        if self.uneven_ground is not None:
+            self.scene.rigid_object_collections["uneven_ground"] = self.uneven_ground
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -194,6 +204,103 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[])
+
+    def _randomize_uneven_ground(self, env_ids: torch.Tensor) -> None:
+        """Place sparse 2 cm bumps around the rotor while protecting reset poses.
+
+        Candidate positions are sampled uniformly by area in an annulus around
+        the actual Rock body. At reset we reject points close to any collision
+        body in the freshly written robot pose and to previously accepted
+        bumps. This keeps the initial state free of artificial penetrations;
+        after reset the bumps remain fixed until the next reset.
+        """
+
+        if self.uneven_ground is None or len(env_ids) == 0:
+            return
+
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        num_envs = len(env_ids)
+        num_bumps = len(self.cfg.uneven_ground_cfg.rigid_objects)
+        radial_min, radial_max = self.cfg.uneven_ground_radial_range
+        min_robot_distance = float(self.cfg.uneven_ground_min_distance_to_robot)
+        min_bump_distance = float(self.cfg.uneven_ground_min_distance_between_bumps)
+        attempts = max(1, int(self.cfg.uneven_ground_resample_attempts))
+
+        # ``body_link_pose_w`` is in the same world frame expected by the
+        # collection write API. The pivot is taken from the actual fixed Rock
+        # body rather than assuming that every USD revision uses the origin.
+        rock_pose = self.robot.data.body_link_pose_w.torch[env_ids, self.rock_idx[0]]
+        pivot_xy = rock_pose[:, :2]
+        body_xy = self.robot.data.body_link_pose_w.torch[env_ids][:, self.collision_body_indices, :2]
+        left_foot_xy = self._get_left_foot_location()[0][env_ids, :2]
+        right_foot_xy = self._get_right_foot_location()[0][env_ids, :2]
+        protected_xy = torch.cat(
+            (body_xy, left_foot_xy.unsqueeze(1), right_foot_xy.unsqueeze(1)), dim=1
+        )
+
+        bump_xy = torch.empty(
+            (num_envs, num_bumps, 2), device=self.device, dtype=rock_pose.dtype
+        )
+        radial_min_sq = float(radial_min) ** 2
+        radial_max_sq = float(radial_max) ** 2
+
+        for bump_index in range(num_bumps):
+            radius = torch.sqrt(
+                radial_min_sq
+                + (radial_max_sq - radial_min_sq)
+                * torch.rand((num_envs,), device=self.device, dtype=rock_pose.dtype)
+            )
+            angle = (2.0 * math.pi) * torch.rand(
+                (num_envs,), device=self.device, dtype=rock_pose.dtype
+            ) - math.pi
+            candidate = pivot_xy + torch.stack(
+                (radius * torch.cos(angle), radius * torch.sin(angle)), dim=-1
+            )
+
+            for _ in range(attempts):
+                protected_distance = torch.linalg.vector_norm(
+                    candidate.unsqueeze(1) - protected_xy, dim=-1
+                ).amin(dim=1)
+                valid = protected_distance >= min_robot_distance
+                if bump_index > 0:
+                    accepted_distance = torch.linalg.vector_norm(
+                        candidate.unsqueeze(1) - bump_xy[:, :bump_index], dim=-1
+                    ).amin(dim=1)
+                    valid &= accepted_distance >= min_bump_distance
+                if bool(valid.all().item()):
+                    break
+
+                new_radius = torch.sqrt(
+                    radial_min_sq
+                    + (radial_max_sq - radial_min_sq)
+                    * torch.rand((num_envs,), device=self.device, dtype=rock_pose.dtype)
+                )
+                new_angle = (2.0 * math.pi) * torch.rand(
+                    (num_envs,), device=self.device, dtype=rock_pose.dtype
+                ) - math.pi
+                new_candidate = pivot_xy + torch.stack(
+                    (new_radius * torch.cos(new_angle), new_radius * torch.sin(new_angle)), dim=-1
+                )
+                candidate = torch.where(valid.unsqueeze(-1), candidate, new_candidate)
+
+            bump_xy[:, bump_index] = candidate
+
+        bump_height = float(self.cfg.uneven_ground_bump_height)
+        poses = torch.zeros(
+            (num_envs, num_bumps, 7), device=self.device, dtype=rock_pose.dtype
+        )
+        poses[..., :2] = bump_xy
+        poses[..., 2] = bump_height * 0.5
+        yaw = (2.0 * math.pi) * torch.rand(
+            (num_envs, num_bumps), device=self.device, dtype=rock_pose.dtype
+        ) - math.pi
+        poses[..., 5] = torch.sin(yaw * 0.5)
+        poses[..., 6] = torch.cos(yaw * 0.5)
+
+        self.uneven_ground.write_body_link_pose_to_sim_index(
+            body_poses=poses,
+            env_ids=env_ids,
+        )
 
     def update_and_sample_commands(self):
         # update timers
@@ -911,6 +1018,12 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim_index(root_velocity=root_vel, env_ids=env_ids)
         self.robot.write_joint_position_to_sim_index(position=joint_pos, env_ids=env_ids)
         self.robot.write_joint_velocity_to_sim_index(velocity=joint_vel, env_ids=env_ids)
+
+        # Refresh FK before protecting the freshly sampled robot pose from
+        # terrain bumps. The normal reset path performs another forward after
+        # this method; this one is needed for partial resets during training.
+        self.sim.forward()
+        self._randomize_uneven_ground(env_ids)
 
         self.targets[env_ids] = self._raw_to_canonical_actuated(
             joint_pos[:, self._actuated_dof_indices_tensor]
