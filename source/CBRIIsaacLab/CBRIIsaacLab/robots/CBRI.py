@@ -79,6 +79,8 @@ CBR_I_CONFIG = ArticulationCfg(
                 "right_hip_Revolute_6",
                 "left_hip_Revolute_7",
             ],
+            # In canonical coordinates theta_knee = q_knee_motor - q_hip_motor,
+            # hence q_knee_motor = theta_knee + theta_hip for both legs.
             # Canonical physical coordinates use the opposite sign on the
             # right leg and the authored sign on the left leg.
             transmission_pairs=[
@@ -97,6 +99,18 @@ CBR_I_CONFIG = ArticulationCfg(
             },
             velocity_limit=572957.0,
             velocity_limit_sim=572957.0,
+            # Reflected output-side inertia of the 5008 motors with 12:1
+            # reduction.  Besides matching the missing rotor inertia, this
+            # keeps the explicit motor-space PD stable at the 250 Hz physics
+            # rate.  The coupled transmission is still evaluated explicitly
+            # by CoupledLegPDActuator.
+            armature=0.02,
+            # Joint-space approximation of motor, 12:1 gearbox, and bearing
+            # losses.  Isaac Sim 6 interprets static/dynamic values as joint
+            # effort [N m] and viscous friction as [N m s/rad].
+            friction=0.10,
+            dynamic_friction=0.08,
+            viscous_friction=0.01,
             stiffness=73.3,
             damping=3.67,
         ),

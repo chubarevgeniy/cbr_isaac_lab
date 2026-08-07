@@ -29,10 +29,22 @@ The leg transmission is modeled in the actuator layer rather than with extra
 USD links.  The articulation coordinates remain the physical relative hip and
 knee angles, while the controller uses
 `q_hip_motor = theta_hip` and
-`q_knee_motor = theta_knee - theta_hip`.  Motor torques are clipped separately
-before being mapped back to physical joint efforts.  This keeps the authored
-knee limits as hard limits on the physical knee angle and avoids artificial
-link mass or tendon compliance.
+`q_knee_motor = theta_knee + theta_hip`.  Equivalently, the physical knee
+coordinate is `theta_knee = q_knee_motor - q_hip_motor`.  Motor torques are
+clipped separately before being mapped back to physical joint efforts.  This
+keeps the authored knee limits as hard limits on the physical knee angle and
+avoids artificial link mass or tendon compliance.
+
+The four driven articulation joints use `0.02 kg m^2` armature as a diagonal
+approximation of the reflected 5008-rotor inertia after the 12:1 reductions.
+The coupled PD is explicit, so damping randomization is capped at the nominal
+`3.67 N m s/rad`; increasing it by 10% was numerically unstable at the 250 Hz
+physics rate.  The articulation remains at 4 position and 0 velocity solver
+iterations: measured increases did not improve the contact diagnostic.
+The nominal joint-friction approximation is `0.10 N m` static, `0.08 N m`
+dynamic, and `0.01 N m s/rad` viscous. Each component is independently
+randomized by `0.5...1.5` during training, with dynamic friction clamped not
+to exceed static friction.
 
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
   We recommend using the conda installation as it simplifies calling Python scripts from the terminal.

@@ -18,6 +18,8 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils import math as math_utils
 from isaaclab.utils.math import sample_gaussian, sample_uniform
 
+from CBRIIsaacLab.robots.coupled_leg_actuator import CoupledLegPDActuator
+
 from .cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
 from .coordinate_conventions import canonical_actuated_to_raw, raw_actuated_to_canonical
 from .initial_pose_randomization import (
@@ -46,6 +48,14 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.right_hip_idx,_ = self.robot.find_bodies('right_hip')
         self.left_knee_idx,_ = self.robot.find_bodies('left_shin')
         self.right_knee_idx,_ = self.robot.find_bodies('right_shin')
+
+        leg_actuator = self.robot.actuators["coupled_leg_actuator"]
+        if not isinstance(leg_actuator, CoupledLegPDActuator):
+            raise TypeError(
+                "The 'coupled_leg_actuator' group must use CoupledLegPDActuator "
+                "to expose motor-space effort telemetry."
+            )
+        self.leg_actuator = leg_actuator
 
         self.initial_pose_indices = InitialPoseIndices(
             rotor_rod=self.rotor_rod_dof_name_idx[0],
@@ -644,6 +654,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             (self._canonical_target_min - self.targets).clamp_min(0.0)
             + (self.targets - self._canonical_target_max).clamp_min(0.0)
         )
+        motor_effort_limit = self.leg_actuator.effort_limit.clamp_min(1.0e-6)
+        normalized_motor_effort = self.leg_actuator.applied_motor_effort / motor_effort_limit
 
         right_hip_angle = actuated_joint_pos[:, 0:1]
         left_hip_angle = actuated_joint_pos[:, 1:2]
@@ -680,8 +692,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             actuated_joint_pos=actuated_joint_pos,
             actuated_joint_vel=actuated_joint_vel,
             joint_pos_limits=joint_pos_limits,
-            target_joint_pos=self.targets,
             target_joint_limit_violation=target_joint_limit_violation,
+            normalized_motor_effort=normalized_motor_effort,
             foot_height=foot_height,
             foot_horizontal_speed=foot_horizontal_speed,
             reset_terminated=self.reset_terminated,
@@ -698,7 +710,7 @@ class CbriisaaclabEnv(DirectRLEnv):
             action_rate_scale=self.cfg.rewards.action_rate_scale,
             joint_position_limits_scale=self.cfg.rewards.joint_position_limits_scale,
             action_target_limits_scale=self.cfg.rewards.action_target_limits_scale,
-            action_target_error_scale=self.cfg.rewards.action_target_error_scale,
+            motor_effort_scale=self.cfg.rewards.motor_effort_scale,
             foot_slip_scale=self.cfg.rewards.foot_slip_scale,
             foot_slip_height_scale=self.cfg.rewards.foot_slip_height_scale,
             joint_deviation_waist_scale=self.cfg.rewards.joint_deviation_waist_scale,
@@ -738,6 +750,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 left_foot_vel=left_foot_vel,
                 right_foot_vel=right_foot_vel,
                 command=command,
+                normalized_motor_effort=normalized_motor_effort,
             )
         if self.common_step_counter % self.cfg.histogram_log_interval == 0:
             self._log_action_histograms()
@@ -757,6 +770,9 @@ class CbriisaaclabEnv(DirectRLEnv):
                 self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
             )
             target_error = self.targets - unnoisy_joint_state
+            applied_motor_effort = self.leg_actuator.applied_motor_effort
+            motor_effort_limit = self.leg_actuator.effort_limit.clamp_min(1.0e-6)
+            normalized_motor_effort = applied_motor_effort / motor_effort_limit
 
             distributions = {
                 "action/raw": raw_actions,
@@ -765,6 +781,8 @@ class CbriisaaclabEnv(DirectRLEnv):
                 "target/canonical": self.targets,
                 "target/error_to_unnoisy_joint": target_error,
                 "state/unnoisy_joint_canonical": unnoisy_joint_state,
+                "motor/applied_effort": applied_motor_effort,
+                "motor/applied_effort_normalized": normalized_motor_effort,
             }
             for name, values in distributions.items():
                 for joint_index, joint_name in enumerate(self._histogram_joint_names):
@@ -810,6 +828,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         left_foot_vel: torch.Tensor,
         right_foot_vel: torch.Tensor,
         command: torch.Tensor,
+        normalized_motor_effort: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Return physical diagnostics grouped by sitting and walking commands.
 
@@ -893,6 +912,11 @@ class CbriisaaclabEnv(DirectRLEnv):
             "Physical/command/negative_speed_fraction": negative_speed.float().mean(),
             "Physical/termination/terminated_rate": self.reset_terminated.float().mean(),
             "Physical/termination/timeout_rate": self.reset_time_outs.float().mean(),
+            "Physical/motor/applied_effort_abs_normalized": normalized_motor_effort.abs().mean(),
+            "Physical/motor/applied_effort_l2_normalized": (
+                torch.square(normalized_motor_effort).sum(dim=-1).mean()
+            ),
+            "Physical/motor/saturation_fraction": (normalized_motor_effort.abs() >= 0.999).float().mean(),
             "Physical/walk/torso_height": self._masked_mean(torso_height, walking),
             "Physical/walk/head_height": self._masked_mean(head_height, walking),
             "Physical/walk/left_knee_height": self._masked_mean(left_knee_height, walking),
@@ -1041,8 +1065,8 @@ def compute_rewards(
     actuated_joint_pos: torch.Tensor,
     actuated_joint_vel: torch.Tensor,
     joint_pos_limits: torch.Tensor,
-    target_joint_pos: torch.Tensor,
     target_joint_limit_violation: torch.Tensor,
+    normalized_motor_effort: torch.Tensor,
     foot_height: torch.Tensor,
     foot_horizontal_speed: torch.Tensor,
     reset_terminated: torch.Tensor,
@@ -1059,7 +1083,7 @@ def compute_rewards(
     action_rate_scale: float,
     joint_position_limits_scale: float,
     action_target_limits_scale: float,
-    action_target_error_scale: float,
+    motor_effort_scale: float,
     foot_slip_scale: float,
     foot_slip_height_scale: float,
     joint_deviation_waist_scale: float,
@@ -1133,10 +1157,7 @@ def compute_rewards(
         torch.sum(torch.square(target_joint_limit_violation), dim=-1)
         * action_target_limits_scale
     )
-    common_reward += (
-        torch.sum(torch.square(target_joint_pos - actuated_joint_pos), dim=-1)
-        * action_target_error_scale
-    )
+    common_reward += torch.sum(torch.square(normalized_motor_effort), dim=-1) * motor_effort_scale
     foot_ground_weight = torch.exp(-foot_height / foot_slip_height_scale)
     foot_slip_penalty = torch.sum(
         foot_ground_weight * foot_horizontal_speed, dim=-1

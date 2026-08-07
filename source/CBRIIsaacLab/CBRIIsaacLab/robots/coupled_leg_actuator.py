@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class CoupledLegPDActuator(IdealPDActuator):
-    r"""PD actuator for ``theta_knee = q_hip_motor + q_knee_motor``.
+    r"""PD actuator for ``theta_knee = q_knee_motor - q_hip_motor``.
 
     The articulation keeps the physically useful joint coordinates
     ``(theta_hip, theta_knee)``.  For each configured leg pair this actuator
@@ -29,14 +29,14 @@ class CoupledLegPDActuator(IdealPDActuator):
 
     .. math::
 
-        q_h = \theta_h, \qquad q_k = \theta_k - \theta_h,
+        q_h = \theta_h, \qquad q_k = \theta_k + \theta_h,
 
     clips both motor torques independently, and maps them back to articulation
     efforts using virtual work:
 
     .. math::
 
-        \tau_{\theta_h} = \tau_{q_h} - \tau_{q_k}, \qquad
+        \tau_{\theta_h} = \tau_{q_h} + \tau_{q_k}, \qquad
         \tau_{\theta_k} = \tau_{q_k}.
 
     Consequently the knee's existing revolute-joint limit remains a hard
@@ -116,9 +116,9 @@ class CoupledLegPDActuator(IdealPDActuator):
             knee_velocity_error = knee_sign * velocity_error[:, knee_index]
 
             hip_motor_position_error = hip_position_error
-            knee_motor_position_error = knee_position_error - hip_position_error
+            knee_motor_position_error = knee_position_error + hip_position_error
             hip_motor_velocity_error = hip_velocity_error
-            knee_motor_velocity_error = knee_velocity_error - hip_velocity_error
+            knee_motor_velocity_error = knee_velocity_error + hip_velocity_error
 
             computed_hip_motor_effort = (
                 self.stiffness[:, hip_index] * hip_motor_position_error
@@ -150,11 +150,11 @@ class CoupledLegPDActuator(IdealPDActuator):
             # Map motor efforts to canonical physical efforts, then restore
             # the signs of the authored right/left USD joint coordinates.
             computed_physical_effort[:, hip_index] = hip_sign * (
-                computed_hip_motor_effort - computed_knee_motor_effort
+                computed_hip_motor_effort + computed_knee_motor_effort
             )
             computed_physical_effort[:, knee_index] = knee_sign * computed_knee_motor_effort
             applied_physical_effort[:, hip_index] = hip_sign * (
-                applied_hip_motor_effort - applied_knee_motor_effort
+                applied_hip_motor_effort + applied_knee_motor_effort
             )
             applied_physical_effort[:, knee_index] = knee_sign * applied_knee_motor_effort
 

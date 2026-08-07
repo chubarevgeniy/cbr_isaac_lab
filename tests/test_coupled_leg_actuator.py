@@ -55,17 +55,17 @@ def _position_action(target: torch.Tensor) -> ArticulationActions:
 
 
 def test_pd_error_is_evaluated_in_motor_coordinates_for_both_usd_signs() -> None:
-    actuator = _make_actuator()
+    actuator = _make_actuator(effort_limit=100.0)
     current = torch.zeros((1, 4))
 
     # Both legs request canonical physical errors theta_h=2, theta_k=3.
-    # Therefore motor errors are q_h=2 and q_k=theta_k-theta_h=1.
+    # Therefore motor errors are q_h=2 and q_k=theta_k+theta_h=5.
     target = torch.tensor([[-2.0, -3.0, 2.0, 3.0]])
     result = actuator.compute(_position_action(target), current, torch.zeros_like(current))
 
-    # Motor efforts (2, 1) map to canonical physical efforts (1, 1).
+    # Motor efforts (2, 5) map to canonical physical efforts (7, 5).
     # The right-leg USD coordinates have the opposite sign.
-    expected = torch.tensor([[-1.0, -1.0, 1.0, 1.0]])
+    expected = torch.tensor([[-7.0, -5.0, 7.0, 5.0]])
     torch.testing.assert_close(actuator.computed_effort, expected)
     torch.testing.assert_close(actuator.applied_effort, expected)
     torch.testing.assert_close(result.joint_efforts, expected)
@@ -77,42 +77,42 @@ def test_each_motor_is_clipped_before_efforts_are_mapped_to_physical_joints() ->
     actuator = _make_actuator(effort_limit=4.5)
     current = torch.zeros((1, 4))
 
-    # theta_h=10, theta_k=0 produces motor errors q_h=10, q_k=-10.
-    # Unclipped physical efforts are (20, -10); clipping each motor first
-    # gives (tau_h, tau_k)=(9, -4.5).
+    # theta_h=10, theta_k=0 produces motor errors q_h=10, q_k=10.
+    # Unclipped physical efforts are (20, 10); clipping each motor first
+    # gives (tau_h, tau_k)=(9, 4.5).
     target = torch.tensor([[-10.0, 0.0, 10.0, 0.0]])
     actuator.compute(_position_action(target), current, torch.zeros_like(current))
 
     torch.testing.assert_close(
         actuator.computed_effort,
-        torch.tensor([[-20.0, 10.0, 20.0, -10.0]]),
+        torch.tensor([[-20.0, -10.0, 20.0, 10.0]]),
     )
     torch.testing.assert_close(
         actuator.applied_effort,
-        torch.tensor([[-9.0, 4.5, 9.0, -4.5]]),
+        torch.tensor([[-9.0, -4.5, 9.0, 4.5]]),
     )
     torch.testing.assert_close(
         actuator.computed_motor_effort,
-        torch.tensor([[10.0, -10.0, 10.0, -10.0]]),
+        torch.tensor([[10.0, 10.0, 10.0, 10.0]]),
     )
     torch.testing.assert_close(
         actuator.applied_motor_effort,
-        torch.tensor([[4.5, -4.5, 4.5, -4.5]]),
+        torch.tensor([[4.5, 4.5, 4.5, 4.5]]),
     )
 
 
-def test_velocity_feedback_uses_knee_motor_velocity_difference() -> None:
+def test_velocity_feedback_uses_knee_motor_velocity_sum() -> None:
     actuator = _make_actuator(stiffness=0.0, damping=1.0, effort_limit=100.0)
     current = torch.zeros((1, 4))
     # Canonical physical velocities are theta_h_dot=2, theta_k_dot=3 on
-    # both legs, so motor velocities are q_h_dot=2 and q_k_dot=1.
+    # both legs, so motor velocities are q_h_dot=2 and q_k_dot=5.
     raw_velocity = torch.tensor([[-2.0, -3.0, 2.0, 3.0]])
     target = torch.zeros_like(current)
     actuator.compute(_position_action(target), current, raw_velocity)
 
-    # Damping commands motor efforts (-2, -1), mapping to canonical
-    # physical efforts (-1, -1), with the authored right signs reversed.
+    # Damping commands motor efforts (-2, -5), mapping to canonical
+    # physical efforts (-7, -5), with the authored right signs reversed.
     torch.testing.assert_close(
         actuator.applied_effort,
-        torch.tensor([[1.0, 1.0, -1.0, -1.0]]),
+        torch.tensor([[7.0, 5.0, -7.0, -5.0]]),
     )

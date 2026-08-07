@@ -101,7 +101,26 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=joint_names),
             "stiffness_distribution_params": (0.9, 1.1),
-            "damping_distribution_params": (0.9, 1.1),
+            # The actuator PD is explicit.  At 250 Hz, damping above the
+            # nominal 3.67 N m s/rad crosses the measured discrete-time
+            # stability boundary even with 0.02 kg m^2 armature.  Keep the
+            # nominal hardware value as the upper end of randomization.
+            "damping_distribution_params": (0.9, 1.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    robot_joint_friction = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        min_step_count_between_reset=720,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=joint_names),
+            # Scale static, dynamic, and viscous friction independently.  This
+            # covers gearbox temperature, lubrication, and assembly spread
+            # without allowing friction to disappear completely.  Isaac Lab
+            # clamps sampled dynamic friction to the sampled static value.
+            "friction_distribution_params": (0.5, 1.5),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -158,11 +177,14 @@ class RewardCfg:
     joint_velocity_scale = -0.001
     action_rate_scale = -0.05
     joint_position_limits_scale = -5.0
-    # The action-generated target is intentionally not clipped. These are
-    # soft quadratic penalties for asking beyond a joint limit and for
-    # separating the target from the measured joint position.
+    # The action-generated target is intentionally not clipped. Keep a soft
+    # quadratic penalty for asking beyond a physical joint limit.
     action_target_limits_scale = -0.5
-    action_target_error_scale = -0.01
+    # Penalize the squared motor torques after clipping, normalized by each
+    # motor's effort limit. With four motors this term is bounded in [0, 4].
+    # Chosen to keep the typical contribution numerically comparable to the
+    # previous target-position-error penalty while using actual motor effort.
+    motor_effort_scale = -0.001
     # Penalize horizontal foot motion near the ground. The exponential uses
     # the actual foot height in meters and is active outside sitting mode.
     foot_slip_scale = -0.5
