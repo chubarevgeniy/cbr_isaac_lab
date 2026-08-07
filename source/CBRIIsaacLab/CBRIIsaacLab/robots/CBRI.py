@@ -5,6 +5,8 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 
+from .coupled_leg_actuator import CoupledLegPDActuatorCfg
+
 usd_path = os.path.join(os.path.dirname(__file__), "CBR-I.usda")
 
 CBR_I_CONFIG = ArticulationCfg(
@@ -70,30 +72,30 @@ CBR_I_CONFIG = ArticulationCfg(
             stiffness=0.0,
             damping=0.0,
         ),
-        "body_right_hip_actuator": ImplicitActuatorCfg(
-            joint_names_expr=["body_Revolute_4"],
-            effort_limit_sim=4.5,
-            velocity_limit_sim=572957.0,
-            stiffness=73.3,
-            damping=3.67,
-        ),
-        "body_left_hip_actuator": ImplicitActuatorCfg(
-            joint_names_expr=["body_Revolute_5"],
-            effort_limit_sim=4.5,
-            velocity_limit_sim=572957.0,
-            stiffness=73.3,
-            damping=3.67,
-        ),
-        "right_hip_shin_actuator": ImplicitActuatorCfg(
-            joint_names_expr=["right_hip_Revolute_6"],
-            effort_limit_sim=4.5,
-            velocity_limit_sim=572957.0,
-            stiffness=73.3,
-            damping=3.67,
-        ),
-        "left_hip_shin_actuator": ImplicitActuatorCfg(
-            joint_names_expr=["left_hip_Revolute_7"],
-            effort_limit_sim=4.5,
+        "coupled_leg_actuator": CoupledLegPDActuatorCfg(
+            joint_names_expr=[
+                "body_Revolute_4",
+                "body_Revolute_5",
+                "right_hip_Revolute_6",
+                "left_hip_Revolute_7",
+            ],
+            # Canonical physical coordinates use the opposite sign on the
+            # right leg and the authored sign on the left leg.
+            transmission_pairs=[
+                ("body_Revolute_4", "right_hip_Revolute_6", -1.0, -1.0),
+                ("body_Revolute_5", "left_hip_Revolute_7", 1.0, 1.0),
+            ],
+            # These are motor-space limits.  After the transmission mapping,
+            # the physical hip joint can receive up to the sum of both motor
+            # torques while each motor remains limited to 4.5 N m.
+            effort_limit=4.5,
+            effort_limit_sim={
+                "body_Revolute_4": 9.0,
+                "body_Revolute_5": 9.0,
+                "right_hip_Revolute_6": 4.5,
+                "left_hip_Revolute_7": 4.5,
+            },
+            velocity_limit=572957.0,
             velocity_limit_sim=572957.0,
             stiffness=73.3,
             damping=3.67,

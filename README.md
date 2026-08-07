@@ -25,6 +25,15 @@ source/CBRIIsaacLab/CBRIIsaacLab/robots/CBR-I.usda
 The environment cannot be created without this file. The repository's
 `.gitattributes` stores USD assets with Git LFS.
 
+The leg transmission is modeled in the actuator layer rather than with extra
+USD links.  The articulation coordinates remain the physical relative hip and
+knee angles, while the controller uses
+`q_hip_motor = theta_hip` and
+`q_knee_motor = theta_knee - theta_hip`.  Motor torques are clipped separately
+before being mapped back to physical joint efforts.  This keeps the authored
+knee limits as hard limits on the physical knee angle and avoids artificial
+link mass or tendon compliance.
+
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
   We recommend using the conda installation as it simplifies calling Python scripts from the terminal.
 
