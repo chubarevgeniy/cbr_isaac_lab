@@ -52,7 +52,7 @@ def _make_uneven_ground_cfg() -> RigidObjectCollectionCfg:
     )
 
     rigid_objects = {}
-    for bump_index in range(4):
+    for bump_index in range(8):
         # The template is outside the robot's reset annulus. Runtime reset
         # randomization replaces this position in every selected environment.
         template_pos = (1.8 + 0.14 * bump_index, 1.8, bump_height * 0.5)
