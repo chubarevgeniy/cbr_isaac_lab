@@ -57,7 +57,7 @@ def _make_uneven_ground_cfg() -> RigidObjectCollectionCfg:
     )
 
     rigid_objects = {}
-    for bump_index in range(8):
+    for bump_index in range(4):
         # The template is outside the robot's reset annulus. Runtime reset
         # randomization replaces this position in every selected environment.
         template_pos = (1.8 + 0.14 * bump_index, 1.8, bump_height * 0.5)
@@ -182,9 +182,9 @@ class RewardCfg:
     action_target_limits_scale = -0.5
     # Penalize the squared motor torques after clipping, normalized by each
     # motor's effort limit. With four motors this term is bounded in [0, 4].
-    # Chosen to keep the typical contribution numerically comparable to the
-    # previous target-position-error penalty while using actual motor effort.
-    motor_effort_scale = -0.001
+    # The selected weight intentionally applies stronger motor-effort
+    # regularization than the previous target-position-error proxy.
+    motor_effort_scale = -0.02
     # Penalize horizontal foot motion near the ground. The exponential uses
     # the actual foot height in meters and is active outside sitting mode.
     foot_slip_scale = -0.5

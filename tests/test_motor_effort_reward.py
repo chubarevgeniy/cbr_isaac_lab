@@ -8,8 +8,8 @@ from CBRIIsaacLab.tasks.direct.cbriisaaclab.cbriisaaclab_env import compute_rewa
 from CBRIIsaacLab.tasks.direct.cbriisaaclab.cbriisaaclab_env_cfg import RewardCfg
 
 
-def test_configured_motor_effort_weight_matches_previous_regularizer_scale() -> None:
-    assert RewardCfg().motor_effort_scale == -0.001
+def test_configured_motor_effort_weight() -> None:
+    assert RewardCfg().motor_effort_scale == -0.02
 
 
 def test_reward_penalizes_normalized_applied_motor_effort() -> None:
