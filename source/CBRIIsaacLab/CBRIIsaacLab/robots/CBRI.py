@@ -89,13 +89,13 @@ CBR_I_CONFIG = ArticulationCfg(
             ],
             # These are motor-space limits.  After the transmission mapping,
             # the physical hip joint can receive up to the sum of both motor
-            # torques while each motor remains limited to 4.5 N m.
-            effort_limit=4.0,
+            # torques while each motor remains limited to 3.5 N m.
+            effort_limit=3.5,
             effort_limit_sim={
-                "body_Revolute_4": 8.0,
-                "body_Revolute_5": 8.0,
-                "right_hip_Revolute_6": 4.0,
-                "left_hip_Revolute_7": 4.0,
+                "body_Revolute_4": 7.0,
+                "body_Revolute_5": 7.0,
+                "right_hip_Revolute_6": 3.5,
+                "left_hip_Revolute_7": 3.5,
             },
             velocity_limit=572957.0,
             velocity_limit_sim=572957.0,
@@ -108,9 +108,9 @@ CBR_I_CONFIG = ArticulationCfg(
             # Joint-space approximation of motor, 12:1 gearbox, and bearing
             # losses.  Isaac Sim 6 interprets static/dynamic values as joint
             # effort [N m] and viscous friction as [N m s/rad].
-            friction=0.10,
-            dynamic_friction=0.08,
-            viscous_friction=0.01,
+            friction=0.12,
+            dynamic_friction=0.096,
+            viscous_friction=0.012,
             stiffness=73.3,
             damping=3.67,
         ),

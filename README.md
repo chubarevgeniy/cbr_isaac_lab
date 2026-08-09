@@ -41,8 +41,8 @@ The coupled PD is explicit, so damping randomization is capped at the nominal
 `3.67 N m s/rad`; increasing it by 10% was numerically unstable at the 250 Hz
 physics rate.  The articulation remains at 4 position and 0 velocity solver
 iterations: measured increases did not improve the contact diagnostic.
-The nominal joint-friction approximation is `0.10 N m` static, `0.08 N m`
-dynamic, and `0.01 N m s/rad` viscous. Each component is independently
+The nominal joint-friction approximation is `0.12 N m` static, `0.096 N m`
+dynamic, and `0.012 N m s/rad` viscous. Each component is independently
 randomized by `0.5...1.5` during training, with dynamic friction clamped not
 to exceed static friction.
 

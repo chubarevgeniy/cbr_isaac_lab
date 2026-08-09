@@ -12,9 +12,9 @@ def test_coupled_actuator_uses_measured_stable_armature() -> None:
     actuator_cfg = CBR_I_CONFIG.actuators["coupled_leg_actuator"]
 
     assert actuator_cfg.armature == pytest.approx(0.02)
-    assert actuator_cfg.friction == pytest.approx(0.10)
-    assert actuator_cfg.dynamic_friction == pytest.approx(0.08)
-    assert actuator_cfg.viscous_friction == pytest.approx(0.01)
+    assert actuator_cfg.friction == pytest.approx(0.12)
+    assert actuator_cfg.dynamic_friction == pytest.approx(0.096)
+    assert actuator_cfg.viscous_friction == pytest.approx(0.012)
 
 
 def test_explicit_pd_randomization_does_not_exceed_nominal_damping() -> None:
