@@ -229,6 +229,15 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     observation_space = 19
     state_space = 0
 
+    # Observation latency is measured at the policy/control rate.  With the
+    # current 250 Hz physics and decimation=5, 0.02 s is exactly one control
+    # step.  ``current`` preserves the existing observation, ``delayed`` uses
+    # one delayed joint-state sample, and ``random`` chooses one mode per
+    # environment at reset.
+    observation_delay_s = 0.02
+    observation_delay_mode = "delayed"
+    observation_delay_probability = 0.5
+
     phys_sps = 250
 
     # domain randomization config

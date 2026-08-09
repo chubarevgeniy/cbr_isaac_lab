@@ -33,3 +33,12 @@ def test_joint_friction_is_randomized_around_nominal_values() -> None:
 
     assert friction_params["friction_distribution_params"] == pytest.approx((0.5, 1.5))
     assert friction_params["operation"] == "scale"
+
+
+def test_observation_delay_is_one_policy_step_and_keeps_observation_shape() -> None:
+    env_cfg = CbriisaaclabEnvCfg()
+
+    assert env_cfg.observation_delay_s == pytest.approx(0.02)
+    assert env_cfg.sim.dt * env_cfg.decimation == pytest.approx(0.02)
+    assert env_cfg.observation_delay_mode == "current"
+    assert env_cfg.observation_space == 19

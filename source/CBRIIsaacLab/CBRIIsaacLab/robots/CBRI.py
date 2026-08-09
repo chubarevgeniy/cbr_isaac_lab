@@ -90,12 +90,12 @@ CBR_I_CONFIG = ArticulationCfg(
             # These are motor-space limits.  After the transmission mapping,
             # the physical hip joint can receive up to the sum of both motor
             # torques while each motor remains limited to 3.5 N m.
-            effort_limit=3.5,
+            effort_limit=3.0,
             effort_limit_sim={
-                "body_Revolute_4": 7.0,
-                "body_Revolute_5": 7.0,
-                "right_hip_Revolute_6": 3.5,
-                "left_hip_Revolute_7": 3.5,
+                "body_Revolute_4": 6.0,
+                "body_Revolute_5": 6.0,
+                "right_hip_Revolute_6": 3.0,
+                "left_hip_Revolute_7": 3.0,
             },
             velocity_limit=572957.0,
             velocity_limit_sim=572957.0,

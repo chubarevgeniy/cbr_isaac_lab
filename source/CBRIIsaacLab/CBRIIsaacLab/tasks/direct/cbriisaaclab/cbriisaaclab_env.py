@@ -117,6 +117,18 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         self.joint_pos = self.robot.data.joint_pos.torch
         self.joint_vel = self.robot.data.joint_vel.torch
+        self._observation_delay_steps = self._configure_observation_delay()
+        history_length = max(self._observation_delay_steps, 1)
+        self._observation_joint_pos_history = self.joint_pos.unsqueeze(0).repeat(
+            history_length, 1, 1
+        ).clone()
+        self._observation_joint_vel_history = self.joint_vel.unsqueeze(0).repeat(
+            history_length, 1, 1
+        ).clone()
+        self._observation_history_index = 0
+        self._observation_delay_mask = torch.zeros(
+            self.joint_pos.shape[0], device=self.device, dtype=torch.bool
+        )
 
         self._histogram_writer = None
         if getattr(self.cfg, "log_dir", None):
@@ -179,6 +191,98 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _canonical_to_raw_actuated(self, canonical: torch.Tensor) -> torch.Tensor:
         return canonical_actuated_to_raw(canonical, self.cfg.canonical_hip_down_angle)
+
+    def _configure_observation_delay(self) -> int:
+        """Validate the configured latency and convert it to control steps."""
+
+        mode = str(self.cfg.observation_delay_mode).strip().lower()
+        if mode not in {"current", "delayed", "random"}:
+            raise ValueError(
+                "observation_delay_mode must be 'current', 'delayed', or 'random'; "
+                f"got {self.cfg.observation_delay_mode!r}"
+            )
+        probability = float(self.cfg.observation_delay_probability)
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(
+                "observation_delay_probability must be in [0, 1]; "
+                f"got {probability}"
+            )
+
+        delay_s = float(self.cfg.observation_delay_s)
+        if delay_s < 0.0:
+            raise ValueError(f"observation_delay_s must be non-negative; got {delay_s}")
+        control_dt = float(self.cfg.sim.dt) * int(self.cfg.decimation)
+        delay_steps_float = delay_s / control_dt
+        delay_steps = int(round(delay_steps_float))
+        if not math.isclose(delay_steps_float, delay_steps, rel_tol=1.0e-6, abs_tol=1.0e-6):
+            raise ValueError(
+                "observation_delay_s must be an integer number of policy steps; "
+                f"got {delay_s} s for control dt {control_dt} s"
+            )
+
+        self._observation_delay_mode = mode
+        self._observation_delay_probability = probability
+        return delay_steps
+
+    def _reset_observation_delay(
+        self,
+        env_ids: torch.Tensor,
+        joint_pos: torch.Tensor,
+        joint_vel: torch.Tensor,
+    ) -> None:
+        """Reset latency selection and history for newly reset environments."""
+
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        if self._observation_delay_mode == "current":
+            self._observation_delay_mask[env_ids] = False
+        elif self._observation_delay_mode == "delayed":
+            self._observation_delay_mask[env_ids] = True
+        else:
+            self._observation_delay_mask[env_ids] = (
+                torch.rand(len(env_ids), device=self.device)
+                < self._observation_delay_probability
+            )
+
+        # Fill every history slot so a reset cannot expose the previous
+        # episode's state while the delay pipeline warms up.
+        if self._observation_delay_steps > 0:
+            self._observation_joint_pos_history[:, env_ids] = joint_pos.unsqueeze(0)
+            self._observation_joint_vel_history[:, env_ids] = joint_vel.unsqueeze(0)
+
+    def _get_observation_joint_state(
+        self,
+        current_joint_pos: torch.Tensor,
+        current_joint_vel: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the selected current/delayed joint state and advance history."""
+
+        if self._observation_delay_steps == 0:
+            return current_joint_pos, current_joint_vel
+
+        delayed_joint_pos = self._observation_joint_pos_history[
+            self._observation_history_index
+        ].clone()
+        delayed_joint_vel = self._observation_joint_vel_history[
+            self._observation_history_index
+        ].clone()
+
+        if self._observation_delay_mode == "current":
+            selected_joint_pos = current_joint_pos
+            selected_joint_vel = current_joint_vel
+        elif self._observation_delay_mode == "delayed":
+            selected_joint_pos = delayed_joint_pos
+            selected_joint_vel = delayed_joint_vel
+        else:
+            delay_mask = self._observation_delay_mask.unsqueeze(-1)
+            selected_joint_pos = torch.where(delay_mask, delayed_joint_pos, current_joint_pos)
+            selected_joint_vel = torch.where(delay_mask, delayed_joint_vel, current_joint_vel)
+
+        self._observation_joint_pos_history[self._observation_history_index] = current_joint_pos
+        self._observation_joint_vel_history[self._observation_history_index] = current_joint_vel
+        self._observation_history_index = (
+            self._observation_history_index + 1
+        ) % self._observation_delay_steps
+        return selected_joint_pos, selected_joint_vel
 
     def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
         """Convert raw actions to direct canonical joint-position targets."""
@@ -564,8 +668,11 @@ class CbriisaaclabEnv(DirectRLEnv):
     def _get_observations(self):
         self.update_and_sample_commands()
 
-        joint_pos = self.joint_pos.clone()
-        joint_vel = self.joint_vel.clone()
+        current_joint_pos = self.joint_pos.clone()
+        current_joint_vel = self.joint_vel.clone()
+        joint_pos, joint_vel = self._get_observation_joint_state(
+            current_joint_pos, current_joint_vel
+        )
 
         if self.cfg.add_noise:
             # Apply noise to hip and knee positions
@@ -1054,6 +1161,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
+        self._reset_observation_delay(env_ids, joint_pos, joint_vel)
     
 @torch.jit.script
 def compute_rewards(

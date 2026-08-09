@@ -46,6 +46,14 @@ dynamic, and `0.012 N m s/rad` viscous. Each component is independently
 randomized by `0.5...1.5` during training, with dynamic friction clamped not
 to exceed static friction.
 
+Observation latency is configurable without changing the 19-element policy
+observation. In `CbriisaaclabEnvCfg`, `observation_delay_s = 0.02` is one
+policy step at the current `250 Hz` physics rate and `decimation = 5`.
+`observation_delay_mode` can be set to `"current"`, `"delayed"`, or
+`"random"`; the last option selects one mode per environment on reset.
+Only joint position/velocity measurements are delayed; the task command and
+`last_action` remain current.
+
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
   We recommend using the conda installation as it simplifies calling Python scripts from the terminal.
 
