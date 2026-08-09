@@ -181,6 +181,38 @@ the environment and PPO configuration, git provenance, checkpoints, TensorBoard 
 and the full training trajectory under `logs/skrl/cbr_i_ppo/`. Compare all recorded steps,
 not just the tail of a run.
 
+### Warm-start and NumPy export for ROS
+
+To adapt a trained policy to a robot with weaker motors, use `--warm_start` together
+with the source checkpoint. It restores only the policy and observation normalizer;
+the value model, PPO optimizer, value normalizer, and rollout memory start fresh:
+
+```bash
+../IsaacLab/isaaclab.sh -p scripts/skrl/train.py \
+    --task=Template-Cbriisaaclab-Direct-v0 \
+    --checkpoint=/absolute/path/to/agent_650000.pt \
+    --warm_start
+```
+
+To run the policy in a ROS Python node without importing PyTorch, export it from the
+checkpoint using the Isaac Lab Python environment (Isaac Sim itself is not launched):
+
+```bash
+VIRTUAL_ENV=/path/to/env_isaaclab python scripts/skrl/export_numpy_policy.py \
+    --checkpoint=/absolute/path/to/agent_650000.pt \
+    --output_file=policy.npz
+```
+
+This produces `policy.npz` and `policy.json` next to the checkpoint. The archive contains
+the MLP and observation scaler; the JSON records the 19-element observation layout,
+coordinate signs, action offset/scales, canonical hip reference, and both configured
+`default_standing_state` poses. Copy `scripts/skrl/numpy_policy.py` and the two exported
+files into the ROS package. The runtime exposes `build_observation`, `predict`, and
+`action_to_raw_target`; keep feeding the exact previous policy action as the last four
+observation values and reset it to zeros on node startup. See the detailed
+[NumPy/ROS export contract](scripts/skrl/export_numpy_policy.md) for the exact
+coordinate formulas and a ROS example.
+
 ### Single-factor and cross-factor experiments
 
 Keep one-factor branches for attribution, then add cross-factor branches to measure interactions.
