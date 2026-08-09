@@ -15,6 +15,7 @@ a more user-friendly way.
 import argparse
 import sys
 
+import torch
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -29,6 +30,15 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
+parser.add_argument(
+    "--warm_start",
+    action="store_true",
+    default=False,
+    help=(
+        "Load only policy and observation-normalizer weights from --checkpoint; "
+        "reset the value model, optimizer, value normalizer, and PPO memory."
+    ),
+)
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
     "--ml_framework",
@@ -49,6 +59,8 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.warm_start and not args_cli.checkpoint:
+    parser.error("--warm_start requires --checkpoint")
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -250,7 +262,41 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # load checkpoint (if specified)
     if resume_path:
         print(f"[INFO] Loading model checkpoint from: {resume_path}")
-        runner.agent.load(resume_path)
+        if args_cli.warm_start:
+            if version.parse(torch.__version__) >= version.parse("1.13"):
+                modules = torch.load(
+                    resume_path,
+                    map_location=runner.agent.device,
+                    weights_only=False,
+                )
+            else:
+                modules = torch.load(resume_path, map_location=runner.agent.device)
+
+            if not isinstance(modules, dict):
+                raise ValueError(f"Warm-start checkpoint must contain a module dictionary: {resume_path}")
+            if "policy" not in modules:
+                raise KeyError(f"Warm-start checkpoint does not contain a 'policy' module: {resume_path}")
+            if "observation_preprocessor" not in modules:
+                raise KeyError(
+                    "Warm-start checkpoint does not contain 'observation_preprocessor'. "
+                    "Use a checkpoint produced by this training configuration."
+                )
+
+            policy = runner.agent.checkpoint_modules.get("policy")
+            observation_preprocessor = runner.agent.checkpoint_modules.get("observation_preprocessor")
+            if policy is None or observation_preprocessor is None:
+                raise RuntimeError("Warm start requires policy and observation_preprocessor modules")
+
+            policy.load_state_dict(modules["policy"])
+            policy.eval()
+            observation_preprocessor.load_state_dict(modules["observation_preprocessor"])
+            observation_preprocessor.eval()
+            print(
+                "[INFO] Warm start: loaded policy and observation preprocessor; "
+                "reset value model, optimizer, value preprocessor, and PPO memory."
+            )
+        else:
+            runner.agent.load(resume_path)
 
     # run training
     runner.run()

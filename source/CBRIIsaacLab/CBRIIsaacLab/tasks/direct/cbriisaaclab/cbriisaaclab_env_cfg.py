@@ -184,7 +184,7 @@ class RewardCfg:
     # motor's effort limit. With four motors this term is bounded in [0, 4].
     # The selected weight intentionally applies stronger motor-effort
     # regularization than the previous target-position-error proxy.
-    motor_effort_scale = -0.02
+    motor_effort_scale = -0.05
     # Penalize horizontal foot motion near the ground. The exponential uses
     # the actual foot height in meters and is active outside sitting mode.
     foot_slip_scale = -0.5
