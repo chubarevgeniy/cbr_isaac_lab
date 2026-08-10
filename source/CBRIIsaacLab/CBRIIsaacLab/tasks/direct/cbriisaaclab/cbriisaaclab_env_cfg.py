@@ -235,7 +235,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # one delayed joint-state sample, and ``random`` chooses one mode per
     # environment at reset.
     observation_delay_s = 0.02
-    observation_delay_mode = "delayed"
+    observation_delay_mode = "random"
     observation_delay_probability = 0.5
 
     phys_sps = 250
