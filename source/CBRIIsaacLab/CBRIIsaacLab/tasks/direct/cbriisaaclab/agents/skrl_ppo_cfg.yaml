@@ -13,8 +13,8 @@ models:
     clip_actions: False
     clip_log_std: True
     min_log_std: -20.0
-    max_log_std: 2.0
-    initial_log_std: 0.0
+    max_log_std: -1.204  # exp(-1.204) ~= 0.3
+    initial_log_std: -1.204  # exp(-1.204) ~= 0.3
     network:
       - name: net
         input: OBSERVATIONS
