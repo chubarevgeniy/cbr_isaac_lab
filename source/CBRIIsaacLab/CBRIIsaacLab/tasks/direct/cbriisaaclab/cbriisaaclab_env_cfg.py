@@ -236,7 +236,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # environment at reset.
     observation_delay_s = 0.02
     observation_delay_mode = "random"
-    observation_delay_probability = 0.5
+    observation_delay_probability = 0.7
 
     phys_sps = 250
 
