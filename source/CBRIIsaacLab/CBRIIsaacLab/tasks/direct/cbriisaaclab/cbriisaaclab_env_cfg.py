@@ -275,13 +275,22 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     right_hip_shin_dof_name = "right_hip_Revolute_6"
     left_hip_shin_dof_name = "left_hip_Revolute_7"
 
-    # Initial command distribution. The 70% non-sitting environments are
-    # split evenly between standing and walking commands.
+    # Initial reset distribution. ``mixed`` restores the former broad
+    # randomized sit/stand/walk reset. ``sitting`` uses only the sitting
+    # template. ``standing_a``/``standing_b`` use one exact standing template;
+    # ``standing_ab`` selects only between those two exact templates;
+    # ``sitting_standing_ab`` mixes the exact sitting template with exact A/B.
+    initial_reset_mode = "sitting_standing_ab"
+    # A/B templates are prevalidated for the fixed reset mode, so do not run
+    # the per-reset FK/ground search. Enable this for broad/mixed resets.
+    initial_ground_safety_check = False
+
+    # Used by ``mixed`` and ``sitting_standing_ab``.
     initial_sitting_fraction = 0.30
     initial_walking_fraction = 0.50
     initial_walking_speed_range = (0.25, 1.5)
 
-    # Initial active-pose distribution.
+    # Used only when ``initial_reset_mode == "mixed"``.
     initial_body_tilt_range = (-20.0 * math.pi / 180.0, 20.0 * math.pi / 180.0)
     initial_hip_delta = 45.0 * math.pi / 180.0
     initial_knee_delta = 35.0 * math.pi / 180.0

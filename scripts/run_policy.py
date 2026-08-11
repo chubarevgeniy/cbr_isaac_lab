@@ -277,7 +277,10 @@ class CBRIPolicyRunner:
 
     def reset(self):
         env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
-        self.command.copy_(sample_initial_commands(self.num_envs, self.cfg, self.device))
+        reset_mode = self.cfg.initial_reset_mode
+        self.command.copy_(
+            sample_initial_commands(self.num_envs, self.cfg, self.device, mode=reset_mode)
+        )
 
         # Keep sitting resets at their configured default pose. Active resets
         # use exactly the same ground-safe sampler as the training task.
@@ -286,6 +289,7 @@ class CBRIPolicyRunner:
             self.command,
             self.cfg,
             self.initial_pose_indices.rod_body,
+            mode=reset_mode,
         )
         joint_vel = torch.zeros_like(self.robot.data.default_joint_vel.torch)
         root_pose = self.robot.data.default_root_pose.torch.clone()
@@ -306,6 +310,8 @@ class CBRIPolicyRunner:
                 collision_body_indices=self.collision_body_indices,
                 left_foot_offset=self.left_foot_offset,
                 right_foot_offset=self.right_foot_offset,
+                mode=reset_mode,
+                ground_check=self.cfg.initial_ground_safety_check,
                 forward_fn=self.sim.forward,
             )
             joint_pos[active_mask] = active_result.joint_pos

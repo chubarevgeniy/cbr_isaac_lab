@@ -124,17 +124,42 @@ def sample_initial_commands(
 
     ``mixed`` keeps 30% sitting environments and splits the remaining 70%
     equally between standing and walking.  ``stand`` is used by the pose
-    inspector and produces only zero-speed standing commands.
+    inspector and produces only zero-speed standing commands.  The fixed reset
+    modes produce only sitting or zero-speed standing commands; their matching
+    initial pose is selected by ``sample_randomized_joint_positions``.
+    ``sitting_standing_ab`` keeps the configured sitting fraction and assigns
+    every other reset to an exact A/B standing template.
     """
 
-    if mode not in {"mixed", "stand"}:
+    if mode not in {
+        "mixed",
+        "stand",
+        "sitting",
+        "standing_a",
+        "standing_b",
+        "standing_ab",
+        "sitting_standing_ab",
+    }:
         raise ValueError(f"Unsupported initial command mode: {mode}")
 
     commands = torch.zeros((num_envs, 5), device=device, dtype=torch.float32)
     if num_envs == 0:
         return commands
 
-    if mode == "stand":
+    if mode == "sitting":
+        commands[:, 0] = 1.0
+        commands[:, 1] = float(cfg.command_info_cfg["sit_min"]) * 0.5
+        return commands
+
+    if mode == "sitting_standing_ab":
+        sitting = torch.rand((num_envs,), device=device, generator=generator) < float(
+            cfg.initial_sitting_fraction
+        )
+        commands[sitting, 0] = 1.0
+        commands[sitting, 1] = float(cfg.command_info_cfg["sit_min"]) * 0.5
+        return commands
+
+    if mode in {"stand", "standing_a", "standing_b", "standing_ab"}:
         return commands
 
     sitting = torch.rand((num_envs,), device=device, generator=generator) < float(
@@ -171,11 +196,14 @@ def apply_sitting_reset_variation(
     cfg: Any,
     rod_body_index: int,
     *,
+    mode: str = "mixed",
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Keep the legacy small sitting-pose variation unchanged."""
+    """Apply the legacy sitting variation only in the mixed reset mode."""
 
     joint_pos = default_joint_pos.clone()
+    if mode != "mixed":
+        return joint_pos
     sitting = commands[:, 0] == 1
     if bool(sitting.any().item()):
         variation = _uniform(
@@ -250,17 +278,41 @@ def sample_randomized_joint_positions(
     cfg: Any,
     indices: InitialPoseIndices,
     *,
+    mode: str = "mixed",
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Generate broad standing/step-like joint positions for active resets."""
+    """Generate an active reset pose according to ``mode``.
+
+    ``mixed`` preserves the broad randomized sampler.  The fixed standing
+    modes write only one of the configured A/B templates and skip all tilt,
+    hip, and knee perturbations.
+    """
+
+    if mode not in {
+        "mixed",
+        "standing_a",
+        "standing_b",
+        "standing_ab",
+        "sitting_standing_ab",
+    }:
+        raise ValueError(f"Unsupported active initial pose mode: {mode}")
 
     joint_pos = default_joint_pos.clone()
     num_envs = joint_pos.shape[0]
     if num_envs == 0:
         return joint_pos
 
-    template_b = torch.rand((num_envs,), device=joint_pos.device, generator=generator) < 0.5
+    if mode == "standing_a":
+        template_b = torch.zeros((num_envs,), device=joint_pos.device, dtype=torch.bool)
+    elif mode == "standing_b":
+        template_b = torch.ones((num_envs,), device=joint_pos.device, dtype=torch.bool)
+    else:
+        template_b = torch.rand((num_envs,), device=joint_pos.device, generator=generator) < 0.5
     _set_template_pose(joint_pos, cfg, indices, template_b)
+
+    if mode != "mixed":
+        _clamp_joint_positions(joint_pos, soft_joint_pos_limits, indices)
+        return joint_pos
 
     # The beam-to-body joint is the body tilt.  It is absolute by design:
     # sitting remains near -80 degrees, while active initial poses stay inside
@@ -542,10 +594,21 @@ def sample_ground_safe_initial_pose(
     left_foot_offset: torch.Tensor,
     right_foot_offset: torch.Tensor,
     *,
+    mode: str = "mixed",
+    ground_check: bool = True,
     generator: torch.Generator | None = None,
     forward_fn: Callable[[], None] | None = None,
 ) -> GroundSafePoseResult:
-    """Sample active poses, retry invalid candidates, and return safe states."""
+    """Sample active poses and optionally validate them against the ground."""
+
+    if mode not in {
+        "mixed",
+        "standing_a",
+        "standing_b",
+        "standing_ab",
+        "sitting_standing_ab",
+    }:
+        raise ValueError(f"Unsupported active initial pose mode: {mode}")
 
     num_envs = len(env_ids)
     if num_envs == 0:
@@ -559,6 +622,30 @@ def sample_ground_safe_initial_pose(
             default_joint_vel,
             empty_diag,
             torch.empty(0, dtype=torch.bool, device=default_joint_pos.device),
+        )
+
+    if not ground_check:
+        # Fixed templates can bypass the expensive FK/search loop while still
+        # writing the requested A/B pose into the reset state.
+        pose = sample_randomized_joint_positions(
+            default_joint_pos,
+            soft_joint_pos_limits,
+            cfg,
+            indices,
+            mode=mode,
+            generator=generator,
+        )
+        empty_points = torch.full_like(
+            default_joint_pos[:, :3], float("nan")
+        )
+        empty_lower_z = torch.full(
+            (num_envs,), float("nan"), device=default_joint_pos.device, dtype=default_joint_pos.dtype
+        )
+        return GroundSafePoseResult(
+            pose,
+            torch.zeros_like(default_joint_vel),
+            GroundPoseDiagnostics(empty_points, empty_points.clone(), empty_lower_z),
+            torch.ones((num_envs,), device=default_joint_pos.device, dtype=torch.bool),
         )
 
     result_pos = default_joint_pos.clone()
@@ -583,6 +670,7 @@ def sample_ground_safe_initial_pose(
             soft_joint_pos_limits[pending],
             cfg,
             indices,
+            mode=mode,
             generator=generator,
         )
         candidate_vel = torch.zeros_like(default_joint_vel[pending])
@@ -616,14 +704,18 @@ def sample_ground_safe_initial_pose(
         # broad poses from ever being written below the ground.  If this fails,
         # raising is safer than silently creating a penetrating reset state.
         fallback = default_joint_pos[pending].clone()
+        fallback_template_b = torch.full(
+            (len(pending),), mode == "standing_b", device=fallback.device, dtype=torch.bool
+        )
         _set_template_pose(
             fallback,
             cfg,
             indices,
-            torch.zeros(len(pending), device=fallback.device, dtype=torch.bool),
+            fallback_template_b,
         )
-        fallback[:, indices.rod_body] = 0.0
-        fallback[:, indices.rotor_rod] = float(cfg.initial_rotor_rod_search_start)
+        if mode == "mixed":
+            fallback[:, indices.rod_body] = 0.0
+            fallback[:, indices.rotor_rod] = float(cfg.initial_rotor_rod_search_start)
         _clamp_joint_positions(fallback, soft_joint_pos_limits[pending], indices)
         fallback_result = align_bottom_rotor_to_ground(
             robot,

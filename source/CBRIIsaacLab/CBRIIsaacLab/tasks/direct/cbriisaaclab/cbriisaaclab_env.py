@@ -1103,10 +1103,12 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         num_resets = len(env_ids)
 
-        # Start every reset from the configured sitting state. Active
-        # standing/walking environments are replaced below by the shared
-        # randomized-pose sampler.
-        commands = sample_initial_commands(num_resets, self.cfg, self.device)
+        # Reset distribution is selected explicitly in the config. Active
+        # standing environments are replaced below by the shared pose sampler.
+        reset_mode = self.cfg.initial_reset_mode
+        commands = sample_initial_commands(
+            num_resets, self.cfg, self.device, mode=reset_mode
+        )
         self.command[env_ids, :] = commands
 
         joint_pos = apply_sitting_reset_variation(
@@ -1114,6 +1116,7 @@ class CbriisaaclabEnv(DirectRLEnv):
             commands,
             self.cfg,
             self.initial_pose_indices.rod_body,
+            mode=reset_mode,
         )
         joint_vel = torch.zeros_like(self.robot.data.default_joint_vel.torch[env_ids])
         root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()
@@ -1135,6 +1138,8 @@ class CbriisaaclabEnv(DirectRLEnv):
                 collision_body_indices=self.collision_body_indices,
                 left_foot_offset=self.left_foot_offset,
                 right_foot_offset=self.right_foot_offset,
+                mode=reset_mode,
+                ground_check=self.cfg.initial_ground_safety_check,
                 forward_fn=self.sim.forward,
             )
             joint_pos[active_mask] = active_result.joint_pos
