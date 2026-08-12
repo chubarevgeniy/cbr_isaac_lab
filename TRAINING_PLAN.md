@@ -137,7 +137,8 @@ Baseline должен быть точкой сравнения для всех �
 
 - action не накапливается от предыдущего target;
 - action переводится в каноническую joint-position target и затем в raw USD;
-- observation получает `last_action`, а не скрытое накопленное состояние target.
+- observation получает `filtered_action` и нормированную скорость второго
+  порядка action-фильтра, а не скрытое состояние target.
 
 Для регрессионного сравнения остаётся вариант delta targets:
 

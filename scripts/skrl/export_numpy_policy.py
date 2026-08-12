@@ -28,7 +28,7 @@ import yaml
 
 
 DEFAULT_ENV_VALUES: dict[str, Any] = {
-    "observation_space": 19,
+    "observation_space": 23,
     "action_space": 4,
     "base_rotor_dof_name": "Rock_Revolute_1",
     "rotor_rod_dof_name": "bottom_rotor_Revolute_2",
@@ -45,6 +45,22 @@ DEFAULT_ENV_VALUES: dict[str, Any] = {
     "action_default_target": (0.0, 0.0, 0.0, 0.0),
     "action_hip_scale": 0.5 * 130.0 * math.pi / 180.0,
     "action_knee_scale": 0.5 * (124.0 * math.pi / 180.0 - 1.0e-5),
+    "action_filter_dt": 0.02,
+    "action_filter_response_time": 0.12,
+    "action_filter_max_velocity": (3.0, 3.0, 3.0, 3.0),
+    "action_filter_max_acceleration": (20.0, 20.0, 20.0, 20.0),
+    "action_filter_output_min": (
+        (-(196.0 - 130.0) * math.pi / 180.0) / (0.5 * 130.0 * math.pi / 180.0),
+        (-(196.0 - 130.0) * math.pi / 180.0) / (0.5 * 130.0 * math.pi / 180.0),
+        0.0,
+        0.0,
+    ),
+    "action_filter_output_max": (
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+    ),
     "add_noise": True,
     "noise_pos_hip_knee": 0.02,
     "noise_vel_hip_knee": 0.03,
@@ -290,9 +306,9 @@ def _build_metadata(
 ) -> dict[str, Any]:
     observation_size = int(weights[0].shape[1])
     action_size = int(weights[-1].shape[0])
-    if observation_size != 19 or action_size != 4:
+    if observation_size != 23 or action_size != 4:
         raise ValueError(
-            "The ROS contract currently describes the CBR-I 19->4 policy; "
+            "The ROS contract currently describes the CBR-I 23->4 policy; "
             f"got {observation_size}->{action_size}"
         )
 
@@ -314,6 +330,34 @@ def _build_metadata(
         DEFAULT_ENV_VALUES["action_knee_scale"],
     )
     action_scale = [hip_scale, hip_scale, knee_scale, knee_scale]
+    action_filter_max_velocity = _as_float_list(
+        _config_value(env_config, "action_filter_max_velocity"),
+        DEFAULT_ENV_VALUES["action_filter_max_velocity"],
+        4,
+    )
+    action_filter_max_acceleration = _as_float_list(
+        _config_value(env_config, "action_filter_max_acceleration"),
+        DEFAULT_ENV_VALUES["action_filter_max_acceleration"],
+        4,
+    )
+    action_filter_response_time = _as_float(
+        _config_value(env_config, "action_filter_response_time"),
+        DEFAULT_ENV_VALUES["action_filter_response_time"],
+    )
+    action_filter_dt = _as_float(
+        _config_value(env_config, "action_filter_dt"),
+        DEFAULT_ENV_VALUES["action_filter_dt"],
+    )
+    action_filter_output_min = _as_float_list(
+        _config_value(env_config, "action_filter_output_min"),
+        DEFAULT_ENV_VALUES["action_filter_output_min"],
+        4,
+    )
+    action_filter_output_max = _as_float_list(
+        _config_value(env_config, "action_filter_output_max"),
+        DEFAULT_ENV_VALUES["action_filter_output_max"],
+        4,
+    )
     canonical_limits = {
         "min": [
             _as_float(_config_value(env_config, "canonical_hip_min"), DEFAULT_ENV_VALUES["canonical_hip_min"]),
@@ -430,22 +474,46 @@ def _build_metadata(
             {
                 "name": "last_action.right_hip",
                 "indices": [15],
-                "source": "previous policy action[0]",
+                "source": "previous commanded action[0]",
             },
             {
                 "name": "last_action.left_hip",
                 "indices": [16],
-                "source": "previous policy action[1]",
+                "source": "previous commanded action[1]",
             },
             {
                 "name": "last_action.right_knee",
                 "indices": [17],
-                "source": "previous policy action[2]",
+                "source": "previous commanded action[2]",
             },
             {
                 "name": "last_action.left_knee",
                 "indices": [18],
-                "source": "previous policy action[3]",
+                "source": "previous commanded action[3]",
+            },
+            {
+                "name": "filter_velocity.right_hip",
+                "indices": [19],
+                "source": "action filter velocity[0] / max_velocity[0]",
+                "units": "normalized action velocity",
+            },
+            {
+                "name": "filter_velocity.left_hip",
+                "indices": [20],
+                "source": "action filter velocity[1] / max_velocity[1]",
+                "units": "normalized action velocity",
+            },
+            {
+                "name": "filter_velocity.right_knee",
+                "indices": [21],
+                "source": "action filter velocity[2] / max_velocity[2]",
+                "units": "normalized action velocity",
+            },
+            {
+                "name": "filter_velocity.left_knee",
+                "indices": [22],
+                "source": "action filter velocity[3] / max_velocity[3]",
+                "units": "normalized action velocity",
             },
         ]
     )
@@ -468,7 +536,7 @@ def _build_metadata(
     agent_section = agent_section if isinstance(agent_section, dict) else {}
     metadata = {
         "format": "cbri_numpy_policy",
-        "format_version": 1,
+        "format_version": 2,
         "model_file": output_path.name,
         "source_checkpoint": str(checkpoint_path),
         "source_env_config": str(env_config_path) if env_config_path else None,
@@ -481,6 +549,10 @@ def _build_metadata(
             "output_size": action_size,
             "log_std": log_std.tolist(),
             "action_clip_during_training": False,
+            "filtered_action_output_range": {
+                "min": action_filter_output_min,
+                "max": action_filter_output_max,
+            },
             "learning_rate_at_export": agent_section.get("learning_rate"),
         },
         "preprocessing": {
@@ -499,7 +571,8 @@ def _build_metadata(
             "angular_velocity_units": "radians_per_second",
             "raw_joint_order": raw_joint_order,
             "field_layout": field_layout,
-            "last_action_reset": "zeros(4)",
+            "last_action_reset": "normalized action corresponding to measured raw actuated pose; zeros only if pose is unavailable",
+            "filter_velocity_reset": "zeros(4), normalized by action_filter_max_velocity",
             "noise": {
                 "enabled_during_training": _as_bool(
                     _config_value(env_config, "add_noise"), DEFAULT_ENV_VALUES["add_noise"]
@@ -517,14 +590,23 @@ def _build_metadata(
             "canonical_target_offset_rad": action_offset,
             "canonical_target_scale_rad_per_action": action_scale,
             "canonical_limits_rad": canonical_limits,
-            "canonical_target_formula": "canonical_target = offset + action * scale",
+            "canonical_target_formula": "canonical_target = offset + filtered_action * scale",
             "raw_target_formula": [
                 "raw_right_hip = hip_down_angle - canonical_right_hip",
                 "raw_left_hip = canonical_left_hip - hip_down_angle",
                 "raw_right_knee = -canonical_right_knee",
                 "raw_left_knee = canonical_left_knee",
             ],
-            "previous_action_for_observation": "feed the exact previous four-dimensional policy action; reset to zeros",
+            "previous_action_for_observation": "feed the exact previous four-dimensional filtered commanded action; reset to zeros",
+            "deployment_action_filter": {
+                "implementation": "SecondOrderActionFilter in numpy_policy.py",
+                "dt_s": action_filter_dt,
+                "response_time_s": action_filter_response_time,
+                "max_velocity_action_units_per_s": action_filter_max_velocity,
+                "max_acceleration_action_units_per_s2": action_filter_max_acceleration,
+                "output_range": [action_filter_output_min, action_filter_output_max],
+                "feedback_value": "filtered command sent to the position controller",
+            },
         },
         "reset_poses": {
             "joint_values_are_raw_radians": True,
@@ -607,7 +689,7 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     arrays: dict[str, np.ndarray] = {
-        "format_version": np.asarray(1, dtype=np.int64),
+        "format_version": np.asarray(2, dtype=np.int64),
         "activation": np.asarray("elu"),
         "obs_mean": mean,
         "obs_variance": variance,
@@ -629,6 +711,52 @@ def main() -> None:
                 _as_float(_config_value(env_config, "action_knee_scale"), DEFAULT_ENV_VALUES["action_knee_scale"]),
                 _as_float(_config_value(env_config, "action_knee_scale"), DEFAULT_ENV_VALUES["action_knee_scale"]),
             ],
+            dtype=np.float32,
+        ),
+        "action_filter_dt": np.asarray(
+            _as_float(
+                _config_value(env_config, "action_filter_dt"),
+                DEFAULT_ENV_VALUES["action_filter_dt"],
+            ),
+            dtype=np.float32,
+        ),
+        "action_filter_response_time": np.asarray(
+            _as_float(
+                _config_value(env_config, "action_filter_response_time"),
+                DEFAULT_ENV_VALUES["action_filter_response_time"],
+            ),
+            dtype=np.float32,
+        ),
+        "action_filter_max_velocity": np.asarray(
+            _as_float_list(
+                _config_value(env_config, "action_filter_max_velocity"),
+                DEFAULT_ENV_VALUES["action_filter_max_velocity"],
+                4,
+            ),
+            dtype=np.float32,
+        ),
+        "action_filter_max_acceleration": np.asarray(
+            _as_float_list(
+                _config_value(env_config, "action_filter_max_acceleration"),
+                DEFAULT_ENV_VALUES["action_filter_max_acceleration"],
+                4,
+            ),
+            dtype=np.float32,
+        ),
+        "action_filter_output_min": np.asarray(
+            _as_float_list(
+                _config_value(env_config, "action_filter_output_min"),
+                DEFAULT_ENV_VALUES["action_filter_output_min"],
+                4,
+            ),
+            dtype=np.float32,
+        ),
+        "action_filter_output_max": np.asarray(
+            _as_float_list(
+                _config_value(env_config, "action_filter_output_max"),
+                DEFAULT_ENV_VALUES["action_filter_output_max"],
+                4,
+            ),
             dtype=np.float32,
         ),
         "canonical_hip_down_angle": np.asarray(

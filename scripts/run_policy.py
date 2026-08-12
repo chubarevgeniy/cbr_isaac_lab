@@ -66,6 +66,9 @@ from CBRIIsaacLab.tasks.direct.cbriisaaclab.coordinate_conventions import (
     canonical_actuated_to_raw,
     raw_actuated_to_canonical,
 )
+from CBRIIsaacLab.tasks.direct.cbriisaaclab.action_filter import (
+    second_order_action_filter_step,
+)
 
 # Imports for SKRL agent loading
 import CBRIIsaacLab.tasks  # noqa: F401
@@ -217,6 +220,34 @@ class CBRIPolicyRunner:
         self.command = torch.zeros((self.num_envs, 5), device=self.device)
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
         self.targets = torch.zeros((self.num_envs, 4), device=self.device)
+        self._action_filter_position = torch.zeros_like(self.actions)
+        self._action_filter_velocity = torch.zeros_like(self.actions)
+
+        def _action_vector(value, name: str) -> torch.Tensor:
+            vector = torch.as_tensor(value, device=self.device, dtype=self.actions.dtype)
+            if vector.ndim == 0:
+                vector = vector.repeat(self.actions.shape[-1])
+            if vector.shape != (self.actions.shape[-1],):
+                raise ValueError(
+                    f"{name} must be a scalar or shape ({self.actions.shape[-1]},), "
+                    f"got {tuple(vector.shape)}"
+                )
+            return vector
+
+        self._action_filter_dt = float(self.cfg.action_filter_dt)
+        self._action_filter_response_time = float(self.cfg.action_filter_response_time)
+        self._action_filter_max_velocity = _action_vector(
+            self.cfg.action_filter_max_velocity, "action_filter_max_velocity"
+        )
+        self._action_filter_max_acceleration = _action_vector(
+            self.cfg.action_filter_max_acceleration, "action_filter_max_acceleration"
+        )
+        self._action_filter_output_min = _action_vector(
+            self.cfg.action_filter_output_min, "action_filter_output_min"
+        )
+        self._action_filter_output_max = _action_vector(
+            self.cfg.action_filter_output_max, "action_filter_output_max"
+        )
 
         # Markers
         self.visualization_markers = define_markers()
@@ -275,6 +306,22 @@ class CBRIPolicyRunner:
         self.joint_pos = self.robot.data.joint_pos.torch
         self.joint_vel = self.robot.data.joint_vel.torch
 
+    def _filter_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        self._action_filter_position, self._action_filter_velocity = (
+            second_order_action_filter_step(
+                self._action_filter_position,
+                self._action_filter_velocity,
+                actions,
+                dt=self._action_filter_dt,
+                response_time=self._action_filter_response_time,
+                max_velocity=self._action_filter_max_velocity,
+                max_acceleration=self._action_filter_max_acceleration,
+                output_min=self._action_filter_output_min,
+                output_max=self._action_filter_output_max,
+            )
+        )
+        return self._action_filter_position
+
     def reset(self):
         env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         reset_mode = self.cfg.initial_reset_mode
@@ -328,7 +375,13 @@ class CBRIPolicyRunner:
             joint_pos[:, self.actuated_dof_indices], self.cfg.canonical_hip_down_angle
         )
 
-        self.actions.zero_()
+        reset_actions = (self.targets - self._canonical_action_offset) / self._canonical_action_scale
+        self._action_filter_position.copy_(torch.minimum(
+            torch.maximum(reset_actions, self._action_filter_output_min),
+            self._action_filter_output_max,
+        ))
+        self.actions.copy_(self._action_filter_position)
+        self._action_filter_velocity.zero_()
 
     def update_and_sample_commands(self):
         # update timers
@@ -420,6 +473,7 @@ class CBRIPolicyRunner:
             joint_vel,
             self.command[:, [0, 4]],
             self.actions,
+            self._action_filter_velocity / self._action_filter_max_velocity,
         ], dim=-1).float()
 
     def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
@@ -428,8 +482,8 @@ class CBRIPolicyRunner:
         return self._canonical_action_offset + actions * self._canonical_action_scale
 
     def apply_actions(self, actions):
-        self.actions = actions.clone()
-        self.targets = self._actions_to_canonical_targets(actions)
+        self.actions.copy_(self._filter_actions(actions))
+        self.targets = self._actions_to_canonical_targets(self.actions)
         raw_targets = canonical_actuated_to_raw(
             self.targets, self.cfg.canonical_hip_down_angle
         )
@@ -637,6 +691,7 @@ def main():
     phys_sps = 1.0 / args_cli.sim_dt
     decimation = args_cli.decimation
     env_cfg = CbriisaaclabEnvCfg()
+    env_cfg.action_filter_dt = args_cli.sim_dt * decimation
     env_cfg.command_info_cfg = {
         'sit_min': phys_sps / decimation * 1,
         'sit_max': phys_sps / decimation * 2,

@@ -46,7 +46,7 @@ dynamic, and `0.012 N m s/rad` viscous. Each component is independently
 randomized by `0.5...1.5` during training, with dynamic friction clamped not
 to exceed static friction.
 
-Observation latency is configurable without changing the 19-element policy
+Observation latency is configurable without changing the 23-element policy
 observation. In `CbriisaaclabEnvCfg`, `observation_delay_s = 0.02` is one
 policy step at the current `250 Hz` physics rate and `decimation = 5`.
 `observation_delay_mode` can be set to `"current"`, `"delayed"`, or
@@ -212,12 +212,14 @@ VIRTUAL_ENV=/path/to/env_isaaclab python scripts/skrl/export_numpy_policy.py \
 ```
 
 This produces `policy.npz` and `policy.json` next to the checkpoint. The archive contains
-the MLP and observation scaler; the JSON records the 19-element observation layout,
+the MLP and observation scaler; the JSON records the 23-element observation layout,
 coordinate signs, action offset/scales, canonical hip reference, and both configured
 `default_standing_state` poses. Copy `scripts/skrl/numpy_policy.py` and the two exported
-files into the ROS package. The runtime exposes `build_observation`, `predict`, and
-`action_to_raw_target`; keep feeding the exact previous policy action as the last four
-observation values and reset it to zeros on node startup. See the detailed
+files into the ROS package. The runtime exposes `build_observation`, `predict`,
+`ActionFilter`, `SecondOrderActionFilter`, and `action_to_raw_target`. For a real
+robot, use `SecondOrderActionFilter` between `predict()` and
+`action_to_raw_target()`, and feed its filtered command and velocity into the
+last eight observation values. See the detailed
 [NumPy/ROS export contract](scripts/skrl/export_numpy_policy.md) for the exact
 coordinate formulas and a ROS example.
 

@@ -21,6 +21,7 @@ from isaaclab.utils.math import sample_gaussian, sample_uniform
 from CBRIIsaacLab.robots.coupled_leg_actuator import CoupledLegPDActuator
 
 from .cbriisaaclab_env_cfg import CbriisaaclabEnvCfg
+from .action_filter import second_order_action_filter_step
 from .coordinate_conventions import canonical_actuated_to_raw, raw_actuated_to_canonical
 from .initial_pose_randomization import (
     InitialPoseIndices,
@@ -153,6 +154,45 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
+        self._action_filter_position = torch.zeros_like(self.actions)
+        self._action_filter_velocity = torch.zeros_like(self.actions)
+
+        def _action_vector(value, name: str) -> torch.Tensor:
+            vector = torch.as_tensor(value, device=self.device, dtype=self.actions.dtype)
+            if vector.ndim == 0:
+                vector = vector.repeat(self.actions.shape[-1])
+            if vector.shape != (self.actions.shape[-1],):
+                raise ValueError(
+                    f"{name} must be a scalar or shape ({self.actions.shape[-1]},), "
+                    f"got {tuple(vector.shape)}"
+                )
+            return vector
+
+        self._action_filter_dt = float(self.cfg.action_filter_dt)
+        self._action_filter_response_time = float(self.cfg.action_filter_response_time)
+        self._action_filter_max_velocity = _action_vector(
+            self.cfg.action_filter_max_velocity, "action_filter_max_velocity"
+        )
+        self._action_filter_max_acceleration = _action_vector(
+            self.cfg.action_filter_max_acceleration, "action_filter_max_acceleration"
+        )
+        self._action_filter_output_min = _action_vector(
+            self.cfg.action_filter_output_min, "action_filter_output_min"
+        )
+        self._action_filter_output_max = _action_vector(
+            self.cfg.action_filter_output_max, "action_filter_output_max"
+        )
+        if self._action_filter_dt <= 0.0:
+            raise ValueError("action filter dt must be positive")
+        if self._action_filter_response_time <= 0.0:
+            raise ValueError("action_filter_response_time must be positive")
+        if bool(torch.any(self._action_filter_max_velocity <= 0.0).item()):
+            raise ValueError("action_filter_max_velocity must be positive")
+        if bool(torch.any(self._action_filter_max_acceleration <= 0.0).item()):
+            raise ValueError("action_filter_max_acceleration must be positive")
+        if bool(torch.any(self._action_filter_output_min > self._action_filter_output_max).item()):
+            raise ValueError("action_filter_output_min must not exceed output_max")
+
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self._canonical_action_offset = torch.tensor(
             self.cfg.action_default_target,
@@ -288,6 +328,24 @@ class CbriisaaclabEnv(DirectRLEnv):
         """Convert raw actions to direct canonical joint-position targets."""
 
         return self._canonical_action_offset + actions * self._canonical_action_scale
+
+    def _filter_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Advance the second-order command filter at the policy rate."""
+
+        self._action_filter_position, self._action_filter_velocity = (
+            second_order_action_filter_step(
+                self._action_filter_position,
+                self._action_filter_velocity,
+                actions,
+                dt=self._action_filter_dt,
+                response_time=self._action_filter_response_time,
+                max_velocity=self._action_filter_max_velocity,
+                max_acceleration=self._action_filter_max_acceleration,
+                output_min=self._action_filter_output_min,
+                output_max=self._action_filter_output_max,
+            )
+        )
+        return self._action_filter_position
 
     def _setup_scene(self):
         # Initialize the robot
@@ -452,8 +510,8 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions):
         self.previous_actions = self.actions.clone()
-        self.actions = actions.clone()
-        self.targets = self._actions_to_canonical_targets(actions)
+        self.actions.copy_(self._filter_actions(actions))
+        self.targets = self._actions_to_canonical_targets(self.actions)
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -711,8 +769,9 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
             )
         
-        # Targets are direct functions of the current action, so the Unitree-
-        # style last action is more useful than exposing a redundant target.
+        # The action position and its normalized filter velocity are both part
+        # of the policy state. The velocity is needed because the second-order
+        # target generator has memory beyond the last commanded position.
         canonical_joint_pos = joint_pos[:, self.obs_joint_pos_indices].clone()
         canonical_joint_pos[:, self.obs_rotor_rod_pos_index] = (
             -canonical_joint_pos[:, self.obs_rotor_rod_pos_index]
@@ -727,6 +786,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel,
                 self.command[:,[0,4]],
                 self.actions,
+                self._action_filter_velocity / self._action_filter_max_velocity,
             ], dim=-1)
         }
     
@@ -1164,8 +1224,15 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.targets[env_ids] = self._raw_to_canonical_actuated(
             joint_pos[:, self._actuated_dof_indices_tensor]
         )
-        self.actions[env_ids] = 0.0
-        self.previous_actions[env_ids] = 0.0
+        reset_actions = (self.targets[env_ids] - self._canonical_action_offset) / self._canonical_action_scale
+        reset_actions = torch.minimum(
+            torch.maximum(reset_actions, self._action_filter_output_min),
+            self._action_filter_output_max,
+        )
+        self.actions[env_ids] = reset_actions
+        self.previous_actions[env_ids] = reset_actions
+        self._action_filter_position[env_ids] = reset_actions
+        self._action_filter_velocity[env_ids] = 0.0
         self._reset_observation_delay(env_ids, joint_pos, joint_vel)
     
 @torch.jit.script

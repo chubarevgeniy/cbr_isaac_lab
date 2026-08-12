@@ -225,8 +225,9 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 25.0
     # - spaces definition
     action_space = 4
-    # Joint state, command, and current joint targets.
-    observation_space = 19
+    # Joint state, command, filtered action position, and filtered action
+    # velocity. The velocity is normalized by action_filter_max_velocity.
+    observation_space = 23
     state_space = 0
 
     # Observation latency is measured at the policy/control rate.  With the
@@ -332,10 +333,11 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     longitudinal_velocity_proxy_lever_arm = 1.0  # m
     standing_base_rotor_angle_target = STANDING_BASE_ROTOR_ANGLE_TARGET
 
-    # Unitree-style direct position action:
-    #     q_target = action_default_target + action_scale * action
-    # The raw policy action and resulting target are not clipped. Joint-limit
-    # violations are handled as soft reward penalties instead.
+    # Unitree-style direct position action, passed through a second-order
+    # command trajectory generator before reaching the position controller:
+    #     q_target = action_default_target + action_scale * filtered_action
+    # The policy may emit an unbounded action, but the outgoing filtered action
+    # is kept in the configured normalized range.
     # The 0.25-rad Unitree G1 scale is kept as a reference, but is too small
     # for CBR-I's 130/124-deg sitting range, so the active scales are adapted.
     unitree_reference_action_scale = 0.25  # rad
@@ -343,8 +345,31 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     action_hip_scale = 0.5 * canonical_hip_down_angle  # rad, 65 deg per action unit
     action_knee_scale = 0.5 * canonical_knee_max  # rad, 62 deg per action unit
 
+    # Second-order action filter at the policy/control rate. The first command
+    # starts with zero velocity; persistent commands accelerate toward the
+    # configured maximum velocity. Velocities are exposed in observation after
+    # normalization by ``action_filter_max_velocity``.
+    action_filter_dt = 1.0 / phys_sps * decimation
+    action_filter_response_time = 0.12  # s
+    action_filter_max_velocity = (3.0, 3.0, 3.0, 3.0)  # action units/s
+    action_filter_max_acceleration = (20.0, 20.0, 20.0, 20.0)  # action units/s^2
+    # Bounds are the physical canonical joint limits expressed in action units;
+    # sitting needs action values close to 2.0 and must not be clipped to [-1, 1].
+    action_filter_output_min = (
+        canonical_hip_min / action_hip_scale,
+        canonical_hip_min / action_hip_scale,
+        canonical_knee_min / action_knee_scale,
+        canonical_knee_min / action_knee_scale,
+    )
+    action_filter_output_max = (
+        canonical_hip_max / action_hip_scale,
+        canonical_hip_max / action_hip_scale,
+        canonical_knee_max / action_knee_scale,
+        canonical_knee_max / action_knee_scale,
+    )
+
     # 6 canonical joint positions + 7 raw angular velocities + 2 commands
-    # + 4 last actions.
+    # + 4 filtered action positions + 4 normalized filter velocities.
     # - reward configuration
     rewards: RewardCfg = RewardCfg()
     # - reset states/conditions
