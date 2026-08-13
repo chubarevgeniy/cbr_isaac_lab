@@ -30,6 +30,25 @@ from .initial_pose_randomization import (
 )
 
 
+REWARD_COMPONENT_NAMES = (
+    "alive",
+    "death",
+    "vertical_velocity",
+    "angular_velocity",
+    "joint_velocity",
+    "action_second_difference",
+    "joint_position_limits",
+    "target_joint_limits",
+    "motor_effort",
+    "foot_slip",
+    "velocity_tracking",
+    "waist_deviation",
+    "leg_deviation",
+    "flat_orientation",
+    "body_height",
+)
+
+
 class CbriisaaclabEnv(DirectRLEnv):
     cfg: CbriisaaclabEnvCfg
 
@@ -140,6 +159,24 @@ class CbriisaaclabEnv(DirectRLEnv):
                     max_queue=100,
                     flush_secs=30,
                 )
+                self._histogram_writer.add_custom_scalars(
+                    {
+                        "Reward breakdown": {
+                            "positive vs negative": [
+                                "Multiline",
+                                [
+                                    "RewardBreakdown/positive_total",
+                                    "RewardBreakdown/negative_total",
+                                    "RewardBreakdown/total",
+                                ],
+                            ],
+                            "individual terms": [
+                                "Multiline",
+                                [f"RewardBreakdown/{name}" for name in REWARD_COMPONENT_NAMES],
+                            ],
+                        }
+                    }
+                )
             except ImportError:
                 print("[WARN] TensorBoard is unavailable; action histograms will not be written.")
 
@@ -153,6 +190,7 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
+        self.previous_previous_actions = torch.zeros_like(self.actions)
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self._canonical_action_offset = torch.tensor(
             self.cfg.action_default_target,
@@ -451,9 +489,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
-        self.previous_actions = self.actions.clone()
-        self.actions = actions.clone()
-        self.targets = self._actions_to_canonical_targets(actions)
+        self.previous_previous_actions.copy_(self.previous_actions)
+        self.previous_actions.copy_(self.actions)
+        self.actions.copy_(actions)
+        self.targets = self._actions_to_canonical_targets(self.actions)
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -711,8 +750,9 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
             )
         
-        # Targets are direct functions of the current action, so the Unitree-
-        # style last action is more useful than exposing a redundant target.
+        # Targets are direct functions of the action. Expose the two most
+        # recent actions so the policy can distinguish a smooth command ramp
+        # from a reversal, which is needed by the second-order action penalty.
         canonical_joint_pos = joint_pos[:, self.obs_joint_pos_indices].clone()
         canonical_joint_pos[:, self.obs_rotor_rod_pos_index] = (
             -canonical_joint_pos[:, self.obs_rotor_rod_pos_index]
@@ -727,6 +767,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel,
                 self.command[:,[0,4]],
                 self.actions,
+                self.previous_actions,
             ], dim=-1)
         }
     
@@ -790,7 +831,7 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         command = self.command[:, [0, 4]]
 
-        rewards = compute_rewards(
+        reward_components = compute_rewards(
             body_vel=body_vel,
             body_height=body_height,
             body_vertical_vel=body_vertical_vel,
@@ -807,6 +848,8 @@ class CbriisaaclabEnv(DirectRLEnv):
             command=command,
             actions=self.actions,
             previous_actions=self.previous_actions,
+            previous_previous_actions=self.previous_previous_actions,
+            action_target_scale=self._canonical_action_scale,
             alive_reward_scale=self.cfg.rewards.alive_reward_scale,
             death_reward_scale=self.cfg.rewards.death_reward_scale,
             walk_velocity_tracking_scale=self.cfg.rewards.walk_velocity_tracking_scale,
@@ -834,11 +877,13 @@ class CbriisaaclabEnv(DirectRLEnv):
             sit_right_knee_angle_target=self.cfg.rewards.sit_right_knee_angle_target,
             sit_left_knee_angle_target=self.cfg.rewards.sit_left_knee_angle_target,
             sit_pose_angle_multiplier=self.cfg.rewards.sit_pose_angle_multiplier,
+            return_components=True,
         )
+        rewards = reward_components.sum(dim=-1)
 
         self.extras.pop("log", None)
         if self.common_step_counter % self.cfg.metrics_log_interval == 0:
-            self.extras["log"] = self._get_physical_metrics(
+            metrics = self._get_physical_metrics(
                 body_vel=body_vel,
                 body_height=body_height,
                 body_angle=body_angle,
@@ -859,9 +904,53 @@ class CbriisaaclabEnv(DirectRLEnv):
                 command=command,
                 normalized_motor_effort=normalized_motor_effort,
             )
+            metrics.update(self._get_reward_metrics(reward_components))
+            self._log_reward_components(reward_components)
+            self.extras["log"] = metrics
         if self.common_step_counter % self.cfg.histogram_log_interval == 0:
             self._log_action_histograms()
         return rewards
+
+    def _get_reward_metrics(self, reward_components: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return signed reward terms for TensorBoard's scalar dashboard."""
+
+        component_means = reward_components.mean(dim=0)
+        metrics = {
+            f"RewardComponents/{name}": component_means[index]
+            for index, name in enumerate(REWARD_COMPONENT_NAMES)
+        }
+        metrics["RewardComponents/positive_total"] = (
+            reward_components.clamp_min(0.0).sum(dim=-1).mean()
+        )
+        metrics["RewardComponents/negative_total"] = (
+            reward_components.clamp_max(0.0).sum(dim=-1).mean()
+        )
+        metrics["RewardComponents/total"] = reward_components.sum(dim=-1).mean()
+        return metrics
+
+    def _log_reward_components(self, reward_components: torch.Tensor) -> None:
+        """Write a ready-made multiline reward report when a run log exists."""
+
+        if self._histogram_writer is None:
+            return
+
+        component_means = reward_components.mean(dim=0)
+        for index, name in enumerate(REWARD_COMPONENT_NAMES):
+            self._histogram_writer.add_scalar(
+                f"RewardBreakdown/{name}",
+                component_means[index],
+                global_step=self.common_step_counter,
+            )
+
+        self._histogram_writer.add_scalars(
+            "RewardBreakdown",
+            {
+                "positive_total": reward_components.clamp_min(0.0).sum(dim=-1).mean(),
+                "negative_total": reward_components.clamp_max(0.0).sum(dim=-1).mean(),
+                "total": reward_components.sum(dim=-1).mean(),
+            },
+            global_step=self.common_step_counter,
+        )
 
     def _log_action_histograms(self):
         """Write action and target distributions to the run's TensorBoard log."""
@@ -877,6 +966,12 @@ class CbriisaaclabEnv(DirectRLEnv):
                 self.joint_pos.index_select(1, self._actuated_dof_indices_tensor)
             )
             target_error = self.targets - unnoisy_joint_state
+            target_second_difference = compute_target_second_difference(
+                self.actions,
+                self.previous_actions,
+                self.previous_previous_actions,
+                self._canonical_action_scale,
+            )
             applied_motor_effort = self.leg_actuator.applied_motor_effort
             motor_effort_limit = self.leg_actuator.effort_limit.clamp_min(1.0e-6)
             normalized_motor_effort = applied_motor_effort / motor_effort_limit
@@ -885,6 +980,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 "action/raw": raw_actions,
                 "action/clipped_reference": clipped_actions_reference,
                 "action/target_canonical": canonical_action_target,
+                "action/target_second_difference": target_second_difference,
                 "target/canonical": self.targets,
                 "target/error_to_unnoisy_joint": target_error,
                 "state/unnoisy_joint_canonical": unnoisy_joint_state,
@@ -964,6 +1060,12 @@ class CbriisaaclabEnv(DirectRLEnv):
         positive_speed = moving & (target_speed > 0.0)
         negative_speed = moving & (target_speed < 0.0)
         speed_error = body_vel - target_speed
+        target_second_difference = compute_target_second_difference(
+            self.actions,
+            self.previous_actions,
+            self.previous_previous_actions,
+            self._canonical_action_scale,
+        )
 
         body_pose = self.robot.data.body_link_pose_w.torch[:, self.body_idx[0]]
         torso_height = body_pose[:, 2]
@@ -1024,6 +1126,10 @@ class CbriisaaclabEnv(DirectRLEnv):
                 torch.square(normalized_motor_effort).sum(dim=-1).mean()
             ),
             "Physical/motor/saturation_fraction": (normalized_motor_effort.abs() >= 0.999).float().mean(),
+            "Physical/action/target_second_difference_abs": target_second_difference.abs().mean(),
+            "Physical/action/target_second_difference_l2": (
+                torch.square(target_second_difference).sum(dim=-1).mean()
+            ),
             "Physical/walk/torso_height": self._masked_mean(torso_height, walking),
             "Physical/walk/head_height": self._masked_mean(head_height, walking),
             "Physical/walk/left_knee_height": self._masked_mean(left_knee_height, walking),
@@ -1166,8 +1272,24 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
+        self.previous_previous_actions[env_ids] = 0.0
         self._reset_observation_delay(env_ids, joint_pos, joint_vel)
     
+@torch.jit.script
+def compute_target_second_difference(
+    actions: torch.Tensor,
+    previous_actions: torch.Tensor,
+    previous_previous_actions: torch.Tensor,
+    action_target_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Return the second difference of the affine target command."""
+
+    return (
+        (actions - previous_actions)
+        - (previous_actions - previous_previous_actions)
+    ) * action_target_scale
+
+
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
@@ -1186,6 +1308,8 @@ def compute_rewards(
     command: torch.Tensor,
     actions: torch.Tensor,
     previous_actions: torch.Tensor,
+    previous_previous_actions: torch.Tensor,
+    action_target_scale: torch.Tensor,
     alive_reward_scale: float,
     death_reward_scale: float,
     walk_velocity_tracking_scale: float,
@@ -1213,6 +1337,7 @@ def compute_rewards(
     sit_right_knee_angle_target: float,
     sit_left_knee_angle_target: float,
     sit_pose_angle_multiplier: float,
+    return_components: bool = False,
 ):
     # command[:, 0] is the sit/stand command (1 for sit, 0 for walk)
     # command[:, 1] is the target speed
@@ -1261,41 +1386,110 @@ def compute_rewards(
     alive_reward = (1.0 - reset_terminated.float()) * alive_reward_scale
     death_reward = reset_terminated.float() * death_reward_scale
     common_reward = alive_reward + death_reward
-    common_reward += torch.square(body_vertical_vel_value) * base_vertical_velocity_scale
-    common_reward += torch.square(body_angular_vel_value) * base_angular_velocity_scale
-    common_reward += torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
-    common_reward += torch.sum(torch.square(actions - previous_actions), dim=-1) * action_rate_scale
-    common_reward += joint_pos_limits * joint_position_limits_scale
-    common_reward += (
+    vertical_velocity_reward = (
+        torch.square(body_vertical_vel_value) * base_vertical_velocity_scale
+    )
+    common_reward += vertical_velocity_reward
+    angular_velocity_reward = (
+        torch.square(body_angular_vel_value) * base_angular_velocity_scale
+    )
+    common_reward += angular_velocity_reward
+    joint_velocity_reward = (
+        torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
+    )
+    common_reward += joint_velocity_reward
+    # The direct action is an affine target command.  Therefore its second
+    # difference is the second difference of the target after multiplying by
+    # the per-joint target scale; the constant target offset cancels out.
+    target_second_difference = compute_target_second_difference(
+        actions,
+        previous_actions,
+        previous_previous_actions,
+        action_target_scale,
+    )
+    action_second_difference_reward = (
+        torch.sum(torch.square(target_second_difference), dim=-1) * action_rate_scale
+    )
+    common_reward += action_second_difference_reward
+    joint_position_limits_reward = joint_pos_limits * joint_position_limits_scale
+    common_reward += joint_position_limits_reward
+    target_joint_limits_reward = (
         torch.sum(torch.square(target_joint_limit_violation), dim=-1)
         * action_target_limits_scale
     )
-    common_reward += torch.sum(torch.square(normalized_motor_effort), dim=-1) * motor_effort_scale
+    common_reward += target_joint_limits_reward
+    motor_effort_reward = (
+        torch.sum(torch.square(normalized_motor_effort), dim=-1) * motor_effort_scale
+    )
+    common_reward += motor_effort_reward
     foot_ground_weight = torch.exp(-foot_height / foot_slip_height_scale)
     foot_slip_penalty = torch.sum(
         foot_ground_weight * foot_horizontal_speed, dim=-1
     )
     foot_slip_penalty *= (~is_sitting_command).to(dtype=foot_slip_penalty.dtype)
-    common_reward += foot_slip_penalty * foot_slip_scale
+    foot_slip_reward = foot_slip_penalty * foot_slip_scale
+    common_reward += foot_slip_reward
 
     # Unitree track_lin_vel_xy_exp reduced to the one available longitudinal
     # speed proxy. Sitting is the same stand-still command with v_target=0.
     velocity_error = body_vel_value - velocity_command
-    mode_reward = torch.exp(
+    velocity_tracking_reward = torch.exp(
         -(velocity_error ** 2) / (walk_velocity_tracking_std ** 2)
     ) * walk_velocity_tracking_scale
 
     # Unitree joint_deviation_waists, joint_deviation_legs and
     # flat_orientation_l2. For sitting the same terms point to the sitting
     # target and are doubled to make the pose precise.
-    mode_reward += (
-        torch.abs(body_angle_value - body_angle_target) * joint_deviation_waist_scale
-        + torch.sum(torch.abs(actuated_joint_pos - joint_target), dim=-1) * joint_deviation_legs_scale
-        + torch.square(body_angle_value - body_angle_target) * flat_orientation_scale
-    ) * mode_multiplier
-    mode_reward += torch.square(body_height_value - body_height_target) * body_height_scale
+    waist_deviation_reward = (
+        torch.abs(body_angle_value - body_angle_target)
+        * joint_deviation_waist_scale
+        * mode_multiplier
+    )
+    leg_deviation_reward = (
+        torch.sum(torch.abs(actuated_joint_pos - joint_target), dim=-1)
+        * joint_deviation_legs_scale
+        * mode_multiplier
+    )
+    flat_orientation_reward = (
+        torch.square(body_angle_value - body_angle_target)
+        * flat_orientation_scale
+        * mode_multiplier
+    )
+    body_height_reward = (
+        torch.square(body_height_value - body_height_target) * body_height_scale
+    )
+    mode_reward = (
+        velocity_tracking_reward
+        + waist_deviation_reward
+        + leg_deviation_reward
+        + flat_orientation_reward
+        + body_height_reward
+    )
 
+    reward_components = torch.stack(
+        (
+            alive_reward,
+            death_reward,
+            vertical_velocity_reward,
+            angular_velocity_reward,
+            joint_velocity_reward,
+            action_second_difference_reward,
+            joint_position_limits_reward,
+            target_joint_limits_reward,
+            motor_effort_reward,
+            foot_slip_reward,
+            velocity_tracking_reward,
+            waist_deviation_reward,
+            leg_deviation_reward,
+            flat_orientation_reward,
+            body_height_reward,
+        ),
+        dim=-1,
+    )
+    if return_components:
+        return reward_components
     return common_reward + mode_reward
+
 
 def define_markers() -> VisualizationMarkers:
     """Define markers with various different shapes."""

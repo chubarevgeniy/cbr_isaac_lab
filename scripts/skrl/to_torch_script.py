@@ -61,7 +61,7 @@ def main():
     print(f"Using device: {device}")
 
     # Configuration from run_pendv2_sim.py
-    num_observations = 19
+    num_observations = 23
     num_actions = 4
     
     # Instantiate the model

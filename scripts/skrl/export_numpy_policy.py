@@ -28,7 +28,7 @@ import yaml
 
 
 DEFAULT_ENV_VALUES: dict[str, Any] = {
-    "observation_space": 19,
+    "observation_space": 23,
     "action_space": 4,
     "base_rotor_dof_name": "Rock_Revolute_1",
     "rotor_rod_dof_name": "bottom_rotor_Revolute_2",
@@ -290,9 +290,9 @@ def _build_metadata(
 ) -> dict[str, Any]:
     observation_size = int(weights[0].shape[1])
     action_size = int(weights[-1].shape[0])
-    if observation_size != 19 or action_size != 4:
+    if observation_size != 23 or action_size != 4:
         raise ValueError(
-            "The ROS contract currently describes the CBR-I 19->4 policy; "
+            "The ROS contract currently describes the CBR-I 23->4 policy; "
             f"got {observation_size}->{action_size}"
         )
 
@@ -447,6 +447,26 @@ def _build_metadata(
                 "indices": [18],
                 "source": "previous policy action[3]",
             },
+            {
+                "name": "second_last_action.right_hip",
+                "indices": [19],
+                "source": "two-steps-previous policy action[0]",
+            },
+            {
+                "name": "second_last_action.left_hip",
+                "indices": [20],
+                "source": "two-steps-previous policy action[1]",
+            },
+            {
+                "name": "second_last_action.right_knee",
+                "indices": [21],
+                "source": "two-steps-previous policy action[2]",
+            },
+            {
+                "name": "second_last_action.left_knee",
+                "indices": [22],
+                "source": "two-steps-previous policy action[3]",
+            },
         ]
     )
 
@@ -468,7 +488,7 @@ def _build_metadata(
     agent_section = agent_section if isinstance(agent_section, dict) else {}
     metadata = {
         "format": "cbri_numpy_policy",
-        "format_version": 1,
+        "format_version": 2,
         "model_file": output_path.name,
         "source_checkpoint": str(checkpoint_path),
         "source_env_config": str(env_config_path) if env_config_path else None,
@@ -500,6 +520,7 @@ def _build_metadata(
             "raw_joint_order": raw_joint_order,
             "field_layout": field_layout,
             "last_action_reset": "zeros(4)",
+            "second_last_action_reset": "zeros(4)",
             "noise": {
                 "enabled_during_training": _as_bool(
                     _config_value(env_config, "add_noise"), DEFAULT_ENV_VALUES["add_noise"]
@@ -524,7 +545,10 @@ def _build_metadata(
                 "raw_right_knee = -canonical_right_knee",
                 "raw_left_knee = canonical_left_knee",
             ],
-            "previous_action_for_observation": "feed the exact previous four-dimensional policy action; reset to zeros",
+            "previous_actions_for_observation": (
+                "feed the exact previous and two-steps-previous four-dimensional "
+                "policy actions; reset both to zeros"
+            ),
         },
         "reset_poses": {
             "joint_values_are_raw_radians": True,
@@ -607,7 +631,7 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     arrays: dict[str, np.ndarray] = {
-        "format_version": np.asarray(1, dtype=np.int64),
+        "format_version": np.asarray(2, dtype=np.int64),
         "activation": np.asarray("elu"),
         "obs_mean": mean,
         "obs_variance": variance,

@@ -19,6 +19,8 @@
 - checkpoint — каждые `5000` timesteps;
 - scalar-статистики — каждые `100` env-шагов;
 - histogram действий, targets и состояний — каждые `1000` env-шагов.
+- reward breakdown — каждые `100` env-шагов: положительный вклад, отрицательные
+  penalties и каждый отдельный reward term.
 
 Запуск из корня проекта:
 
@@ -59,6 +61,11 @@ trainer.timesteps = max_iterations * rollouts
 - `Physical/sit/mean_joint_velocity_abs`: насколько робот продолжает двигаться во время сидения.
 - `Physical/command/*_fraction`: какая доля окружений сейчас сидит, идёт или получает положительную/отрицательную команду.
 - `Physical/termination/*`: доля падений и time-out.
+- `RewardComponents/positive_total`, `RewardComponents/negative_total` и
+  `RewardComponents/total`: баланс положительных и отрицательных вкладов.
+- `RewardComponents/<term>`: signed contribution каждого reward term, включая
+  `action_second_difference`. При наличии прямого TensorBoard writer готовые
+  общие графики находятся в разделе `Reward breakdown`.
 - `PhysicalHistogram/action/raw/*`: распределение сырых action от policy до clamp.
 - `PhysicalHistogram/action/clipped/*`: распределение action после ограничения `[-1, 1]`.
 - `PhysicalHistogram/action/target_canonical/*`: фактический прямой canonical target.
@@ -137,7 +144,8 @@ Baseline должен быть точкой сравнения для всех �
 
 - action не накапливается от предыдущего target;
 - action переводится в каноническую joint-position target и затем в raw USD;
-- observation получает `last_action`, а не скрытое накопленное состояние target.
+- observation получает два последних action-набора (`a_{t-1}`, `a_{t-2}`), а не
+  скрытое накопленное состояние target.
 
 Для регрессионного сравнения остаётся вариант delta targets:
 
@@ -163,7 +171,7 @@ Baseline должен быть точкой сравнения для всех �
 - удержание высоты/положения корпуса;
 - ошибки rod/hip/knee angles;
 - штрафы угловых скоростей;
-- penalty за изменение action (`action_rate`);
+- penalty за изменение прироста target (`action_rate`, вторая разность);
 - penalty за выход физических joint positions за soft limits;
 - общий множитель `rewards_shaper_scale`.
 

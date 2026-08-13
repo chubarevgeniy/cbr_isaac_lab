@@ -216,6 +216,7 @@ class CBRIPolicyRunner:
         # Buffers
         self.command = torch.zeros((self.num_envs, 5), device=self.device)
         self.actions = torch.zeros((self.num_envs, 4), device=self.device)
+        self.previous_actions = torch.zeros_like(self.actions)
         self.targets = torch.zeros((self.num_envs, 4), device=self.device)
 
         # Markers
@@ -329,6 +330,7 @@ class CBRIPolicyRunner:
         )
 
         self.actions.zero_()
+        self.previous_actions.zero_()
 
     def update_and_sample_commands(self):
         # update timers
@@ -420,6 +422,7 @@ class CBRIPolicyRunner:
             joint_vel,
             self.command[:, [0, 4]],
             self.actions,
+            self.previous_actions,
         ], dim=-1).float()
 
     def _actions_to_canonical_targets(self, actions: torch.Tensor) -> torch.Tensor:
@@ -428,8 +431,9 @@ class CBRIPolicyRunner:
         return self._canonical_action_offset + actions * self._canonical_action_scale
 
     def apply_actions(self, actions):
-        self.actions = actions.clone()
-        self.targets = self._actions_to_canonical_targets(actions)
+        self.previous_actions.copy_(self.actions)
+        self.actions.copy_(actions)
+        self.targets = self._actions_to_canonical_targets(self.actions)
         raw_targets = canonical_actuated_to_raw(
             self.targets, self.cfg.canonical_hip_down_angle
         )

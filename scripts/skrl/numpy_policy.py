@@ -63,9 +63,10 @@ def build_observation(
     raw_joint_velocities: Any,
     command: Any,
     last_action: Any,
+    second_last_action: Any,
     hip_down_angle: float,
 ) -> np.ndarray:
-    """Build the 19-element policy observation from raw robot state.
+    """Build the 23-element policy observation from raw robot state.
 
     Raw joint order must be::
 
@@ -74,17 +75,22 @@ def build_observation(
 
     The returned observation follows the environment order:
 
-        [6 canonical positions, 7 raw velocities, 2 commands, 4 last actions]
+        [6 canonical positions, 7 raw velocities, 2 commands,
+         4 last actions, 4 second-last actions]
 
-    ``command`` is ``[is_sitting, target_speed]`` and ``last_action`` is the
-    previous four-dimensional policy action.  All angles are radians and all
-    angular velocities are radians per second.
+    ``command`` is ``[is_sitting, target_speed]``. ``last_action`` and
+    ``second_last_action`` are the two most recent four-dimensional policy
+    actions. All angles are radians and all angular velocities are radians per
+    second.
     """
 
     raw_positions = _validate_last_dimension(raw_joint_positions, 7, "raw joint positions")
     raw_velocities = _validate_last_dimension(raw_joint_velocities, 7, "raw joint velocities")
     command_array = _validate_last_dimension(command, 2, "command")
     last_action_array = _validate_last_dimension(last_action, 4, "last_action")
+    second_last_action_array = _validate_last_dimension(
+        second_last_action, 4, "second_last_action"
+    )
 
     # The simulator excludes the fixed base rotor from positions, negates the
     # rotor-rod position, and converts the four actuated positions to the
@@ -98,7 +104,13 @@ def build_observation(
         axis=-1,
     )
     return np.concatenate(
-        (canonical_positions, raw_velocities, command_array, last_action_array),
+        (
+            canonical_positions,
+            raw_velocities,
+            command_array,
+            last_action_array,
+            second_last_action_array,
+        ),
         axis=-1,
     ).astype(np.float32, copy=False)
 
@@ -114,6 +126,13 @@ class NumpyPolicy:
     def __init__(self, model_file: str | Path, metadata_file: str | Path | None = None):
         self.model_file = Path(model_file)
         with np.load(self.model_file, allow_pickle=False) as archive:
+            format_version = int(_scalar_from_archive(archive, "format_version", 1))
+            if format_version != 2:
+                raise ValueError(
+                    "Unsupported exported policy format version: "
+                    f"{format_version}; this runtime requires version 2"
+                )
+
             weight_names = sorted(
                 (name for name in archive.files if name.startswith("weight_")),
                 key=lambda name: int(name.removeprefix("weight_")),
@@ -151,6 +170,11 @@ class NumpyPolicy:
             raise ValueError(f"Unsupported exported activation: {self.activation!r}")
         if self.observation_mean.ndim != 1 or self.observation_variance.shape != self.observation_mean.shape:
             raise ValueError("Invalid observation scaler arrays in exported policy")
+        if self.observation_mean.size != 23:
+            raise ValueError(
+                "This runtime expects the CBR-I 23-element observation contract; "
+                f"got {self.observation_mean.size}"
+            )
         if self.weights[0].shape[1] != self.observation_mean.size:
             raise ValueError(
                 "The first policy layer does not match the observation scaler: "
@@ -215,6 +239,7 @@ class NumpyPolicy:
         raw_joint_velocities: Any,
         command: Any,
         last_action: Any,
+        second_last_action: Any,
     ) -> np.ndarray:
         """Build an observation using the hip reference stored in the model."""
 
@@ -223,6 +248,7 @@ class NumpyPolicy:
             raw_joint_velocities,
             command,
             last_action,
+            second_last_action,
             self.canonical_hip_down_angle,
         )
 
@@ -241,7 +267,7 @@ class NumpyPolicy:
         )
 
     def zero_action(self, *, batch_size: int | None = None) -> np.ndarray:
-        """Return the reset value that must be fed as the previous action."""
+        """Return the reset value for either action-history slot."""
 
         if batch_size is None:
             return np.zeros((self.action_size,), dtype=np.float32)
