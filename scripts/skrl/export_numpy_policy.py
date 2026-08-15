@@ -519,8 +519,8 @@ def _build_metadata(
             "angular_velocity_units": "radians_per_second",
             "raw_joint_order": raw_joint_order,
             "field_layout": field_layout,
-            "last_action_reset": "zeros(4)",
-            "second_last_action_reset": "zeros(4)",
+            "last_action_reset": "inverse_affine_action(commanded_reset_canonical_target)",
+            "second_last_action_reset": "inverse_affine_action(commanded_reset_canonical_target)",
             "noise": {
                 "enabled_during_training": _as_bool(
                     _config_value(env_config, "add_noise"), DEFAULT_ENV_VALUES["add_noise"]
@@ -547,7 +547,8 @@ def _build_metadata(
             ],
             "previous_actions_for_observation": (
                 "feed the exact previous and two-steps-previous four-dimensional "
-                "policy actions; reset both to zeros"
+                "policy actions; at reset set both to the inverse-affine action "
+                "of the commanded reset pose"
             ),
         },
         "reset_poses": {

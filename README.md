@@ -217,7 +217,9 @@ coordinate signs, action offset/scales, canonical hip reference, and both config
 `default_standing_state` poses. Copy `scripts/skrl/numpy_policy.py` and the two exported
 files into the ROS package. The runtime exposes `build_observation`, `predict`, and
 `action_to_raw_target`; keep feeding the exact previous and two-steps-previous policy
-actions as the last eight observation values and reset both to zeros on node startup.
+actions as the last eight observation values. At reset, initialize both history
+slots with the inverse-affine action of the commanded reset pose; use zeros only
+when that pose corresponds to a zero action.
 See the detailed
 [NumPy/ROS export contract](scripts/skrl/export_numpy_policy.md) for the exact
 coordinate formulas and a ROS example.

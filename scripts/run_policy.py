@@ -330,9 +330,10 @@ class CBRIPolicyRunner:
             joint_pos[:, self.actuated_dof_indices], self.cfg.canonical_hip_down_angle
         )
 
-        self.actions.zero_()
-        self.previous_actions.zero_()
-        self.previous_previous_actions.zero_()
+        reset_actions = self._canonical_targets_to_actions(self.targets)
+        self.actions.copy_(reset_actions)
+        self.previous_actions.copy_(reset_actions)
+        self.previous_previous_actions.copy_(reset_actions)
 
     def update_and_sample_commands(self):
         # update timers
@@ -431,6 +432,11 @@ class CBRIPolicyRunner:
         """Convert raw actions to direct canonical joint-position targets."""
 
         return self._canonical_action_offset + actions * self._canonical_action_scale
+
+    def _canonical_targets_to_actions(self, targets: torch.Tensor) -> torch.Tensor:
+        """Convert canonical joint targets back to normalized policy actions."""
+
+        return (targets - self._canonical_action_offset) / self._canonical_action_scale
 
     def apply_actions(self, actions):
         self.previous_previous_actions.copy_(self.previous_actions)

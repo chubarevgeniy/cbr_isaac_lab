@@ -305,6 +305,11 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         return self._canonical_action_offset + actions * self._canonical_action_scale
 
+    def _canonical_targets_to_actions(self, targets: torch.Tensor) -> torch.Tensor:
+        """Convert canonical joint targets back to normalized policy actions."""
+
+        return (targets - self._canonical_action_offset) / self._canonical_action_scale
+
     def _setup_scene(self):
         # Initialize the robot
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -1183,12 +1188,17 @@ class CbriisaaclabEnv(DirectRLEnv):
         self.sim.forward()
         self._randomize_uneven_ground(env_ids)
 
-        self.targets[env_ids] = self._raw_to_canonical_actuated(
+        reset_targets = self._raw_to_canonical_actuated(
             joint_pos[:, self._actuated_dof_indices_tensor]
         )
-        self.actions[env_ids] = 0.0
-        self.previous_actions[env_ids] = 0.0
-        self.previous_previous_actions[env_ids] = 0.0
+        reset_actions = self._canonical_targets_to_actions(reset_targets)
+        self.targets[env_ids] = reset_targets
+        # The reset pose is already the active target. Seed all action-history
+        # slots with its inverse affine action so the first policy command is
+        # compared against the pose that was actually commanded, not zeros.
+        self.actions[env_ids] = reset_actions
+        self.previous_actions[env_ids] = reset_actions
+        self.previous_previous_actions[env_ids] = reset_actions
         self._reset_observation_delay(env_ids, joint_pos, joint_vel)
 
 

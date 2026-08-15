@@ -122,8 +122,16 @@ command = [is_sitting, target_speed]
 
 `is_sitting` is `1` for sitting and `0` for standing/walking. The last eight
 observation values are the exact previous and two-steps-previous policy
-actions, not target angles. Reset both history slots to zeros when the ROS
-node starts or the episode resets.
+actions, not target angles. On reset, set both history slots to the action that
+would produce the commanded reset pose:
+
+```text
+reset_action = (reset_canonical_target - action_offset) / action_scale
+```
+
+This keeps the first action difference relative to the pose that was actually
+commanded. Use zero history only when the reset target itself is the zero
+canonical target.
 
 ### Meaning of the canonical angles
 
@@ -142,8 +150,11 @@ node starts or the episode resets.
 from numpy_policy import NumpyPolicy
 
 policy = NumpyPolicy("policy.npz")
-last_action = policy.zero_action()
-second_last_action = policy.zero_action()
+
+# q_reset is the commanded raw seven-joint reset pose in the documented order.
+reset_action = policy.reset_action_from_raw_joint_positions(q_reset)
+last_action = reset_action.copy()
+second_last_action = reset_action.copy()
 
 # q and qd use the raw joint order documented above.
 observation = policy.build_observation(

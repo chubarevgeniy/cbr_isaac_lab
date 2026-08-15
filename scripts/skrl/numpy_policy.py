@@ -258,6 +258,21 @@ class NumpyPolicy:
         action_array = _validate_last_dimension(action, self.action_size, "action")
         return self.action_offset + action_array * self.action_scale
 
+    def canonical_target_to_action(self, target: Any) -> np.ndarray:
+        """Convert a canonical joint-position target to a policy action."""
+
+        target_array = _validate_last_dimension(target, self.action_size, "canonical target")
+        return (target_array - self.action_offset) / self.action_scale
+
+    def reset_action_from_raw_joint_positions(self, raw_joint_positions: Any) -> np.ndarray:
+        """Return the action corresponding to a raw seven-joint reset pose."""
+
+        raw_positions = _validate_last_dimension(raw_joint_positions, 7, "raw joint positions")
+        canonical_target = raw_actuated_to_canonical(
+            raw_positions[..., 3:7], self.canonical_hip_down_angle
+        )
+        return self.canonical_target_to_action(canonical_target)
+
     def action_to_raw_target(self, action: Any) -> np.ndarray:
         """Convert a policy action to raw USD/robot joint-position targets."""
 
@@ -267,7 +282,7 @@ class NumpyPolicy:
         )
 
     def zero_action(self, *, batch_size: int | None = None) -> np.ndarray:
-        """Return the reset value that must be fed as the previous action."""
+        """Return a normalized zero action (not the reset-pose history value)."""
 
         if batch_size is None:
             return np.zeros((self.action_size,), dtype=np.float32)

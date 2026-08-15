@@ -78,6 +78,14 @@ def test_observation_and_action_contract_uses_canonical_signs(tmp_path) -> None:
     action = np.asarray([1.0, -1.0, 0.5, -0.5], dtype=np.float32)
     np.testing.assert_allclose(policy.action_to_canonical_target(action), [1.0, -2.0, 1.5, -2.0])
     np.testing.assert_allclose(policy.action_to_raw_target(action), [1.0, -4.0, -1.5, -2.0])
+    np.testing.assert_allclose(
+        policy.canonical_target_to_action(policy.action_to_canonical_target(action)),
+        action,
+    )
+    np.testing.assert_allclose(
+        policy.reset_action_from_raw_joint_positions(raw_positions),
+        [1.6, 0.75, -0.2, -0.175],
+    )
 
 
 def test_sidecar_metadata_is_loaded(tmp_path) -> None:
