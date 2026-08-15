@@ -175,7 +175,14 @@ class RewardCfg:
     base_vertical_velocity_scale = -2.0
     base_angular_velocity_scale = -0.05
     joint_velocity_scale = -0.001
-    action_rate_scale = -0.05
+    # Penalize the squared second difference of the commanded target:
+    # ``target_t - 2 * target_{t-1} + target_{t-2}``.  The coefficient is
+    # linearly changed between the two configured trainer timesteps, so early
+    # learning is not dominated by action smoothing.
+    action_acceleration_scale_start = -0.05
+    action_acceleration_scale_end = -2.0
+    action_acceleration_schedule_start_timestep = 100_000
+    action_acceleration_schedule_end_timestep = 600_000
     joint_position_limits_scale = -5.0
     # The action-generated target is intentionally not clipped. Keep a soft
     # quadratic penalty for asking beyond a physical joint limit.
@@ -225,8 +232,8 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     episode_length_s = 25.0
     # - spaces definition
     action_space = 4
-    # Joint state, command, and current joint targets.
-    observation_space = 19
+    # Joint state, command, and the two most recent policy actions.
+    observation_space = 23
     state_space = 0
 
     # Observation latency is measured at the policy/control rate.  With the
@@ -344,7 +351,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     action_knee_scale = 0.5 * canonical_knee_max  # rad, 62 deg per action unit
 
     # 6 canonical joint positions + 7 raw angular velocities + 2 commands
-    # + 4 last actions.
+    # + 4 most recent actions + 4 second-most-recent actions.
     # - reward configuration
     rewards: RewardCfg = RewardCfg()
     # - reset states/conditions

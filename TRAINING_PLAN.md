@@ -137,7 +137,8 @@ Baseline должен быть точкой сравнения для всех �
 
 - action не накапливается от предыдущего target;
 - action переводится в каноническую joint-position target и затем в raw USD;
-- observation получает `last_action`, а не скрытое накопленное состояние target.
+- observation получает два последних action-набора (`a_{t-1}`, `a_{t-2}`), а не
+  скрытое накопленное состояние target.
 
 Для регрессионного сравнения остаётся вариант delta targets:
 
@@ -163,7 +164,7 @@ Baseline должен быть точкой сравнения для всех �
 - удержание высоты/положения корпуса;
 - ошибки rod/hip/knee angles;
 - штрафы угловых скоростей;
-- penalty за изменение action (`action_rate`);
+- penalty за изменение прироста target (`action_acceleration`, вторая разность);
 - penalty за выход физических joint positions за soft limits;
 - общий множитель `rewards_shaper_scale`.
 

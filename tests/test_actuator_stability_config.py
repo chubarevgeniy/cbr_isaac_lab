@@ -40,5 +40,9 @@ def test_observation_delay_is_one_policy_step_and_keeps_observation_shape() -> N
 
     assert env_cfg.observation_delay_s == pytest.approx(0.02)
     assert env_cfg.sim.dt * env_cfg.decimation == pytest.approx(0.02)
-    assert env_cfg.observation_delay_mode == "current"
-    assert env_cfg.observation_space == 19
+    assert env_cfg.observation_delay_mode == "random"
+    assert env_cfg.observation_space == 23
+    assert env_cfg.rewards.action_acceleration_scale_start == pytest.approx(-0.05)
+    assert env_cfg.rewards.action_acceleration_scale_end == pytest.approx(-2.0)
+    assert env_cfg.rewards.action_acceleration_schedule_start_timestep == 100_000
+    assert env_cfg.rewards.action_acceleration_schedule_end_timestep == 600_000

@@ -153,6 +153,7 @@ class CbriisaaclabEnv(DirectRLEnv):
 
         self.actions = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
+        self.previous_previous_actions = torch.zeros_like(self.actions)
         self.targets = torch.zeros((self.cfg.scene.num_envs, 4), device=self.device)
         self._canonical_action_offset = torch.tensor(
             self.cfg.action_default_target,
@@ -191,6 +192,21 @@ class CbriisaaclabEnv(DirectRLEnv):
 
     def _canonical_to_raw_actuated(self, canonical: torch.Tensor) -> torch.Tensor:
         return canonical_actuated_to_raw(canonical, self.cfg.canonical_hip_down_angle)
+
+    def _get_action_acceleration_scale(self) -> float:
+        """Return the action-acceleration coefficient for this trainer step."""
+
+        return compute_action_acceleration_scale(
+            timestep=float(self.common_step_counter),
+            start_scale=float(self.cfg.rewards.action_acceleration_scale_start),
+            end_scale=float(self.cfg.rewards.action_acceleration_scale_end),
+            start_timestep=float(
+                self.cfg.rewards.action_acceleration_schedule_start_timestep
+            ),
+            end_timestep=float(
+                self.cfg.rewards.action_acceleration_schedule_end_timestep
+            ),
+        )
 
     def _configure_observation_delay(self) -> int:
         """Validate the configured latency and convert it to control steps."""
@@ -451,9 +467,10 @@ class CbriisaaclabEnv(DirectRLEnv):
             self.command[commands_to_change,4] = sample_uniform(-1.5,1.5,(commands_to_change_number,),self.device)
 
     def _pre_physics_step(self, actions):
-        self.previous_actions = self.actions.clone()
-        self.actions = actions.clone()
-        self.targets = self._actions_to_canonical_targets(actions)
+        self.previous_previous_actions.copy_(self.previous_actions)
+        self.previous_actions.copy_(self.actions)
+        self.actions.copy_(actions)
+        self.targets = self._actions_to_canonical_targets(self.actions)
         self._visualize_markers()
 
     def _get_left_knee_location(self) -> torch.Tensor:
@@ -711,8 +728,9 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel[:, [self.base_rotor_dof_name_idx[0]]].shape, self.device
             )
         
-        # Targets are direct functions of the current action, so the Unitree-
-        # style last action is more useful than exposing a redundant target.
+        # Targets are direct functions of the action. Expose the two most
+        # recent actions so the policy can distinguish a smooth command ramp
+        # from a reversal, which is needed by the second-order action penalty.
         canonical_joint_pos = joint_pos[:, self.obs_joint_pos_indices].clone()
         canonical_joint_pos[:, self.obs_rotor_rod_pos_index] = (
             -canonical_joint_pos[:, self.obs_rotor_rod_pos_index]
@@ -727,6 +745,7 @@ class CbriisaaclabEnv(DirectRLEnv):
                 joint_vel,
                 self.command[:,[0,4]],
                 self.actions,
+                self.previous_actions,
             ], dim=-1)
         }
     
@@ -789,6 +808,7 @@ class CbriisaaclabEnv(DirectRLEnv):
             dim=-1,
         )
         command = self.command[:, [0, 4]]
+        action_acceleration_scale = self._get_action_acceleration_scale()
 
         rewards = compute_rewards(
             body_vel=body_vel,
@@ -807,6 +827,9 @@ class CbriisaaclabEnv(DirectRLEnv):
             command=command,
             actions=self.actions,
             previous_actions=self.previous_actions,
+            previous_previous_actions=self.previous_previous_actions,
+            action_target_scale=self._canonical_action_scale,
+            action_acceleration_scale=action_acceleration_scale,
             alive_reward_scale=self.cfg.rewards.alive_reward_scale,
             death_reward_scale=self.cfg.rewards.death_reward_scale,
             walk_velocity_tracking_scale=self.cfg.rewards.walk_velocity_tracking_scale,
@@ -814,7 +837,6 @@ class CbriisaaclabEnv(DirectRLEnv):
             base_vertical_velocity_scale=self.cfg.rewards.base_vertical_velocity_scale,
             base_angular_velocity_scale=self.cfg.rewards.base_angular_velocity_scale,
             joint_velocity_scale=self.cfg.rewards.joint_velocity_scale,
-            action_rate_scale=self.cfg.rewards.action_rate_scale,
             joint_position_limits_scale=self.cfg.rewards.joint_position_limits_scale,
             action_target_limits_scale=self.cfg.rewards.action_target_limits_scale,
             motor_effort_scale=self.cfg.rewards.motor_effort_scale,
@@ -1166,8 +1188,43 @@ class CbriisaaclabEnv(DirectRLEnv):
         )
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
+        self.previous_previous_actions[env_ids] = 0.0
         self._reset_observation_delay(env_ids, joint_pos, joint_vel)
-    
+
+
+def compute_action_acceleration_scale(
+    timestep: float,
+    start_scale: float,
+    end_scale: float,
+    start_timestep: float,
+    end_timestep: float,
+) -> float:
+    """Linearly interpolate a reward scale over trainer timesteps."""
+
+    if end_timestep <= start_timestep:
+        return end_scale
+    progress = min(
+        max((timestep - start_timestep) / (end_timestep - start_timestep), 0.0),
+        1.0,
+    )
+    return start_scale + progress * (end_scale - start_scale)
+
+
+@torch.jit.script
+def compute_target_second_difference(
+    actions: torch.Tensor,
+    previous_actions: torch.Tensor,
+    previous_previous_actions: torch.Tensor,
+    action_target_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Return the second difference of the affine target command."""
+
+    return (
+        (actions - previous_actions)
+        - (previous_actions - previous_previous_actions)
+    ) * action_target_scale
+
+
 @torch.jit.script
 def compute_rewards(
     body_vel: torch.Tensor,
@@ -1186,6 +1243,9 @@ def compute_rewards(
     command: torch.Tensor,
     actions: torch.Tensor,
     previous_actions: torch.Tensor,
+    previous_previous_actions: torch.Tensor,
+    action_target_scale: torch.Tensor,
+    action_acceleration_scale: float,
     alive_reward_scale: float,
     death_reward_scale: float,
     walk_velocity_tracking_scale: float,
@@ -1193,7 +1253,6 @@ def compute_rewards(
     base_vertical_velocity_scale: float,
     base_angular_velocity_scale: float,
     joint_velocity_scale: float,
-    action_rate_scale: float,
     joint_position_limits_scale: float,
     action_target_limits_scale: float,
     motor_effort_scale: float,
@@ -1264,7 +1323,19 @@ def compute_rewards(
     common_reward += torch.square(body_vertical_vel_value) * base_vertical_velocity_scale
     common_reward += torch.square(body_angular_vel_value) * base_angular_velocity_scale
     common_reward += torch.sum(torch.square(actuated_joint_vel), dim=-1) * joint_velocity_scale
-    common_reward += torch.sum(torch.square(actions - previous_actions), dim=-1) * action_rate_scale
+    # The direct action is an affine target command.  Its constant offset
+    # cancels in the second difference, while the target scale converts the
+    # normalized action acceleration to physical radians.
+    target_second_difference = compute_target_second_difference(
+        actions,
+        previous_actions,
+        previous_previous_actions,
+        action_target_scale,
+    )
+    common_reward += (
+        torch.sum(torch.square(target_second_difference), dim=-1)
+        * action_acceleration_scale
+    )
     common_reward += joint_pos_limits * joint_position_limits_scale
     common_reward += (
         torch.sum(torch.square(target_joint_limit_violation), dim=-1)

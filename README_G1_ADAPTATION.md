@@ -45,7 +45,8 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
           -2.0 * body_vertical_velocity^2
           -0.05 * body_angular_velocity^2
           -0.001 * sum(joint_velocity^2)
-          -0.05 * sum((action - previous_action)^2)
+          + action_acceleration_scale(t)
+            * sum((target_t - 2*target_{t-1} + target_{t-2})^2)
           -5.0 * joint_position_limit_violation
           -0.5 * |body_angle|
           -0.5 * sum(|canonical_joint_position|)
@@ -68,7 +69,9 @@ R_walk = +1.0 * exp(-((body_vel - target_speed) / 0.5)^2)
   `base_linear_velocity`; в reward это явно умножается на
   `height_velocity_proxy_lever_arm = 1 m`;
 - `qdot(rod_1_Revolute_3)` используется как угловая скорость корпуса-прокси;
-- `action_rate` сравнивает текущий и предыдущий action, как в Unitree.
+- `action_acceleration` штрафует вторую разность target; коэффициент равен
+  `-0.05` до `100000` timesteps, затем линейно меняется до `-2.0` к
+  `600000` timesteps и дальше остаётся `-2.0`.
 - `joint_acc`, `applied_torque`, gait, foot clearance и contact-gated foot
   slide намеренно не участвуют в reward. Добавлен эвристический near-ground
   foot-motion term без контактного сенсора:
@@ -139,13 +142,14 @@ action `1` больше не покрывает весь диапазон сус
 обратно в raw USD-знаки перед `set_joint_position_target`; превышение лимитов
 штрафуется отдельно.
 Четыре target-поля старого delta-контракта заменены в observation на четыре
-компоненты текущего `last_action`, как в конфигурации Unitree G1. Reference
+компоненты текущего `last_action` и четыре компоненты `second_last_action`.
+Эта история нужна для вычисления второй разности target. Reference
 Unitree scale `0.25 rad` сохранён в конфиге для отдельного сравнительного
 эксперимента, но не используется в основном CBR-I sit/walk baseline.
 
 Для sitting используется та же стабилизирующая структура, что и для
 stand-still: скорость target равна нулю, применяются vertical/angular velocity,
-joint velocity, action-rate, limits и alive. Отличаются только pose targets:
+joint velocity, action-acceleration, limits и alive. Отличаются только pose targets:
 height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. Все
 угловые deviation terms умножены на `2.0`, чтобы робот не получал почти такую
 же награду за грубо похожую позу.
@@ -156,7 +160,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | --- | ---: | --- |
 | termination | нет | termination только завершает эпизод; CBR-I добавляет `-200.0` за падение, timeout не штрафуется |
 | alive | `+0.15` | `+0.15` на живом шаге, как у Unitree |
-| action rate | `-0.05` | `-0.05 * sum((action - previous_action)²)` |
+| action acceleration | `-0.05 → -2.0` | `scale(timestep) * sum((target_t - 2*target_{t-1} + target_{t-2})²)` |
 | sitting angular multiplier | `2.0` | усиливает соответствие body/hip/knee targets |
 | skrl reward shaper | `0.1` | масштабирует весь reward перед PPO |
 
@@ -176,7 +180,7 @@ height-прокси `-0.0908 m`, `rod_body=-80°`, hips `130°`, knees `124°`. 
 | `base_angular_velocity` | `-0.05` | roll/pitch angular velocity корпуса | `-0.05 * qdot(rod_body)²` | Адаптировано через body-joint velocity |
 | `joint_vel` | `-0.001` | L2 penalty скоростей суставов | `-0.001 * sum(qvel²)` для 4 hip/knee | Перенесено |
 | `joint_acc` | `-2.5e-7` | плавность/ускорения суставов | Нет: `joint_acc` намеренно не читается | Не переносится |
-| `action_rate` | `-0.05` | изменение action между шагами | `-0.05 * sum((a_t-a_{t-1})²)` | Перенесено |
+| `action_acceleration` | `-0.05 → -2.0` | изменение прироста target между шагами | `scale(timestep) * sum((target_t-2*target_{t-1}+target_{t-2})²)` | Эксперимент |
 | `dof_pos_limits` | `-5.0` | приближение к пределам суставов | текущая физическая позиция вне soft limits получает штраф; raw action target получает отдельный quadratic limit penalty `-0.5` | Адаптировано |
 | `energy` | `-2e-5` | `|joint velocity| * |applied torque|` | Нет: `applied_torque` намеренно не читается | Не переносится |
 | `joint_deviation_arms` | `-0.1` | удержание рук около default pose | Нет рук в текущей модели | Не переносить |

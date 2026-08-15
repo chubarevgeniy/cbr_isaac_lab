@@ -91,14 +91,15 @@ Raw joint order must be:
  right_hip, left_hip, right_knee, left_knee]
 ```
 
-The helper converts these values into the 19-element observation used during
+The helper converts these values into the 23-element observation used during
 training:
 
 ```text
 [6 canonical positions,
  7 raw angular velocities,
  2 commands,
- 4 previous actions]
+ 4 previous actions,
+ 4 two-steps-previous actions]
 ```
 
 The six position values are:
@@ -119,9 +120,10 @@ command values are:
 command = [is_sitting, target_speed]
 ```
 
-`is_sitting` is `1` for sitting and `0` for standing/walking. The last four
-observation values are the exact previous policy action, not target angles.
-Reset them to zeros when the ROS node starts or the episode resets.
+`is_sitting` is `1` for sitting and `0` for standing/walking. The last eight
+observation values are the exact previous and two-steps-previous policy
+actions, not target angles. Reset both history slots to zeros when the ROS
+node starts or the episode resets.
 
 ### Meaning of the canonical angles
 
@@ -141,6 +143,7 @@ from numpy_policy import NumpyPolicy
 
 policy = NumpyPolicy("policy.npz")
 last_action = policy.zero_action()
+second_last_action = policy.zero_action()
 
 # q and qd use the raw joint order documented above.
 observation = policy.build_observation(
@@ -148,6 +151,7 @@ observation = policy.build_observation(
     raw_joint_velocities=qd,
     command=[is_sitting, target_speed],
     last_action=last_action,
+    second_last_action=second_last_action,
 )
 
 action = policy.predict(observation)
@@ -155,11 +159,12 @@ raw_target = policy.action_to_raw_target(action)
 
 # Send raw_target to the four robot position controllers in this order:
 # [right_hip, left_hip, right_knee, left_knee]
+second_last_action = last_action
 last_action = action
 ```
 
 `predict()` also applies the saved `RunningStandardScaler`. Pass it the
-un-normalized 19-element environment observation returned by
+un-normalized 23-element environment observation returned by
 `build_observation()`, not an already standardized vector.
 
 The simulator was trained with observation noise enabled, but the ROS runtime
