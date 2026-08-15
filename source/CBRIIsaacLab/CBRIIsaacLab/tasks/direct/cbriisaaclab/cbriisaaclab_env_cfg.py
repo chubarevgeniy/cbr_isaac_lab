@@ -236,7 +236,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # environment at reset.
     observation_delay_s = 0.02
     observation_delay_mode = "random"
-    observation_delay_probability = 0.7
+    observation_delay_probability = 0.6
 
     phys_sps = 250
 
@@ -280,10 +280,10 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
     # template. ``standing_a``/``standing_b`` use one exact standing template;
     # ``standing_ab`` selects only between those two exact templates;
     # ``sitting_standing_ab`` mixes the exact sitting template with exact A/B.
-    initial_reset_mode = "sitting_standing_ab"
+    initial_reset_mode = "mixed"
     # A/B templates are prevalidated for the fixed reset mode, so do not run
     # the per-reset FK/ground search. Enable this for broad/mixed resets.
-    initial_ground_safety_check = False
+    initial_ground_safety_check = True
 
     # Used by ``mixed`` and ``sitting_standing_ab``.
     initial_sitting_fraction = 0.30
