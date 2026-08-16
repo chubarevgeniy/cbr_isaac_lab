@@ -272,6 +272,12 @@ class CBRIPolicyRunner:
             ],
             device=self.device,
         )
+        canonical_target_range = self._canonical_target_max - self._canonical_target_min
+        canonical_target_abs_limit = torch.maximum(
+            (self._canonical_target_min - self._canonical_action_offset).abs(),
+            (self._canonical_target_max - self._canonical_action_offset).abs(),
+        ) + self.cfg.action_limit_range_margin * canonical_target_range
+        self._policy_action_abs_limit = canonical_target_abs_limit / self._canonical_action_scale.abs()
 
         # References
         self.joint_pos = self.robot.data.joint_pos.torch
@@ -441,7 +447,11 @@ class CBRIPolicyRunner:
     def apply_actions(self, actions):
         self.previous_previous_actions.copy_(self.previous_actions)
         self.previous_actions.copy_(self.actions)
-        self.actions.copy_(actions)
+        self.actions.copy_(torch.clamp(
+            actions,
+            min=-self._policy_action_abs_limit,
+            max=self._policy_action_abs_limit,
+        ))
         self.targets = self._actions_to_canonical_targets(self.actions)
         raw_targets = canonical_actuated_to_raw(
             self.targets, self.cfg.canonical_hip_down_angle

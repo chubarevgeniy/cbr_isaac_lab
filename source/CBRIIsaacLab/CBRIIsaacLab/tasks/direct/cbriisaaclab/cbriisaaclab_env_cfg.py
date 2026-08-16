@@ -101,10 +101,9 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=joint_names),
             "stiffness_distribution_params": (0.9, 1.1),
-            # The actuator PD is explicit.  At 250 Hz, damping above the
-            # nominal 3.67 N m s/rad crosses the measured discrete-time
-            # stability boundary even with 0.02 kg m^2 armature.  Keep the
-            # nominal hardware value as the upper end of randomization.
+            # The actuator PD is explicit. Keep the softened nominal damping
+            # as the upper end of randomization; the original 3.67 N m s/rad
+            # was already near the measured 250 Hz stability boundary.
             "damping_distribution_params": (0.9, 1.0),
             "operation": "scale",
             "distribution": "uniform",
@@ -180,12 +179,12 @@ class RewardCfg:
     # linearly changed between the two configured trainer timesteps, so early
     # learning is not dominated by action smoothing.
     action_acceleration_scale_start = -0.05
-    action_acceleration_scale_end = -2.0
-    action_acceleration_schedule_start_timestep = 100_000
-    action_acceleration_schedule_end_timestep = 600_000
+    action_acceleration_scale_end = -1.0
+    action_acceleration_schedule_start_timestep = 200_000
+    action_acceleration_schedule_end_timestep = 700_000
     joint_position_limits_scale = -5.0
-    # The action-generated target is intentionally not clipped. Keep a soft
-    # quadratic penalty for asking beyond a physical joint limit.
+    # The bounded action target may still pass a physical joint limit. Keep a
+    # soft quadratic penalty for the amount requested beyond that limit.
     action_target_limits_scale = -0.5
     # Penalize the squared motor torques after clipping, normalized by each
     # motor's effort limit. With four motors this term is bounded in [0, 4].
@@ -341,8 +340,11 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
     # Unitree-style direct position action:
     #     q_target = action_default_target + action_scale * action
-    # The raw policy action and resulting target are not clipped. Joint-limit
-    # violations are handled as soft reward penalties instead.
+    # Policy actions are clipped symmetrically using the farther canonical
+    # limit plus this fraction of the joint's full range. This deliberately
+    # lets the nearer limit be over-commanded by more than the configured
+    # margin while bounding all policy outputs.
+    action_limit_range_margin = 0.20
     # The 0.25-rad Unitree G1 scale is kept as a reference, but is too small
     # for CBR-I's 130/124-deg sitting range, so the active scales are adapted.
     unitree_reference_action_scale = 0.25  # rad

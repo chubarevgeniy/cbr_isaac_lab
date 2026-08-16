@@ -6,6 +6,7 @@ import torch
 
 from CBRIIsaacLab.tasks.direct.cbriisaaclab.cbriisaaclab_env import (
     compute_action_acceleration_scale,
+    compute_policy_action_abs_limit,
     compute_rewards,
     compute_target_second_difference,
 )
@@ -157,8 +158,27 @@ def test_reward_uses_target_second_difference_for_action_acceleration() -> None:
 
 
 def test_action_acceleration_scale_is_clamped_linear_timestep_schedule() -> None:
-    assert compute_action_acceleration_scale(0.0, -0.05, -2.0, 100_000.0, 600_000.0) == -0.05
-    assert compute_action_acceleration_scale(100_000.0, -0.05, -2.0, 100_000.0, 600_000.0) == -0.05
-    assert compute_action_acceleration_scale(350_000.0, -0.05, -2.0, 100_000.0, 600_000.0) == -1.025
-    assert compute_action_acceleration_scale(600_000.0, -0.05, -2.0, 100_000.0, 600_000.0) == -2.0
-    assert compute_action_acceleration_scale(800_000.0, -0.05, -2.0, 100_000.0, 600_000.0) == -2.0
+    assert compute_action_acceleration_scale(0.0, -0.05, -1.0, 200_000.0, 700_000.0) == -0.05
+    assert compute_action_acceleration_scale(200_000.0, -0.05, -1.0, 200_000.0, 700_000.0) == -0.05
+    assert compute_action_acceleration_scale(450_000.0, -0.05, -1.0, 200_000.0, 700_000.0) == -0.525
+    assert compute_action_acceleration_scale(700_000.0, -0.05, -1.0, 200_000.0, 700_000.0) == -1.0
+    assert compute_action_acceleration_scale(800_000.0, -0.05, -1.0, 200_000.0, 700_000.0) == -1.0
+
+
+def test_policy_action_limit_uses_farther_joint_limit_plus_twenty_percent_range() -> None:
+    degrees = torch.tensor([-66.0, 130.0, 0.0, 124.0]) * torch.pi / 180.0
+    target_min = torch.tensor([degrees[0], degrees[0], degrees[2], degrees[2]])
+    target_max = torch.tensor([degrees[1], degrees[1], degrees[3], degrees[3]])
+    action_scale = torch.tensor([65.0, 65.0, 62.0, 62.0]) * torch.pi / 180.0
+
+    action_limit = compute_policy_action_abs_limit(
+        target_min,
+        target_max,
+        torch.zeros(4),
+        action_scale,
+        0.20,
+    )
+
+    expected_target_degrees = torch.tensor([169.2, 169.2, 148.8, 148.8])
+    expected_action_limit = expected_target_degrees / torch.tensor([65.0, 65.0, 62.0, 62.0])
+    torch.testing.assert_close(action_limit, expected_action_limit)

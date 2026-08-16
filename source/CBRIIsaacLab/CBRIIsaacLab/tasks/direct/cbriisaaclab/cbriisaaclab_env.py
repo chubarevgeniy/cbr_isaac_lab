@@ -186,6 +186,13 @@ class CbriisaaclabEnv(DirectRLEnv):
             ],
             device=self.device,
         )
+        self._policy_action_abs_limit = compute_policy_action_abs_limit(
+            self._canonical_target_min,
+            self._canonical_target_max,
+            self._canonical_action_offset,
+            self._canonical_action_scale,
+            self.cfg.action_limit_range_margin,
+        )
 
     def _raw_to_canonical_actuated(self, raw: torch.Tensor) -> torch.Tensor:
         return raw_actuated_to_canonical(raw, self.cfg.canonical_hip_down_angle)
@@ -304,6 +311,15 @@ class CbriisaaclabEnv(DirectRLEnv):
         """Convert raw actions to direct canonical joint-position targets."""
 
         return self._canonical_action_offset + actions * self._canonical_action_scale
+
+    def _clip_policy_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Bound actions using the farther joint limit plus a range margin."""
+
+        return torch.clamp(
+            actions,
+            min=-self._policy_action_abs_limit,
+            max=self._policy_action_abs_limit,
+        )
 
     def _canonical_targets_to_actions(self, targets: torch.Tensor) -> torch.Tensor:
         """Convert canonical joint targets back to normalized policy actions."""
@@ -474,7 +490,7 @@ class CbriisaaclabEnv(DirectRLEnv):
     def _pre_physics_step(self, actions):
         self.previous_previous_actions.copy_(self.previous_actions)
         self.previous_actions.copy_(self.actions)
-        self.actions.copy_(actions)
+        self.actions.copy_(self._clip_policy_actions(actions))
         self.targets = self._actions_to_canonical_targets(self.actions)
         self._visualize_markers()
 
@@ -1218,6 +1234,23 @@ def compute_action_acceleration_scale(
         1.0,
     )
     return start_scale + progress * (end_scale - start_scale)
+
+
+def compute_policy_action_abs_limit(
+    canonical_target_min: torch.Tensor,
+    canonical_target_max: torch.Tensor,
+    action_offset: torch.Tensor,
+    action_scale: torch.Tensor,
+    range_margin: float,
+) -> torch.Tensor:
+    """Return symmetric action bounds based on the farther target limit."""
+
+    target_range = canonical_target_max - canonical_target_min
+    target_abs_limit = torch.maximum(
+        (canonical_target_min - action_offset).abs(),
+        (canonical_target_max - action_offset).abs(),
+    ) + range_margin * target_range
+    return target_abs_limit / action_scale.abs()
 
 
 @torch.jit.script

@@ -37,9 +37,10 @@ avoids artificial link mass or tendon compliance.
 
 The four driven articulation joints use `0.02 kg m^2` armature as a diagonal
 approximation of the reflected 5008-rotor inertia after the 12:1 reductions.
-The coupled PD is explicit, so damping randomization is capped at the nominal
-`3.67 N m s/rad`; increasing it by 10% was numerically unstable at the 250 Hz
-physics rate.  The articulation remains at 4 position and 0 velocity solver
+The coupled PD is explicit and uses softened gains `P=51.31 N m/rad` and
+`D=2.569 N m s/rad`; damping randomization does not exceed that nominal value.
+The original `3.67 N m s/rad` was near the measured stability boundary at the
+250 Hz physics rate. The articulation remains at 4 position and 0 velocity solver
 iterations: measured increases did not improve the contact diagnostic.
 The nominal joint-friction approximation is `0.12 N m` static, `0.096 N m`
 dynamic, and `0.012 N m s/rad` viscous. Each component is independently

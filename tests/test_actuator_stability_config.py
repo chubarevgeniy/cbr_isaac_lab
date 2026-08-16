@@ -43,6 +43,13 @@ def test_observation_delay_is_one_policy_step_and_keeps_observation_shape() -> N
     assert env_cfg.observation_delay_mode == "random"
     assert env_cfg.observation_space == 23
     assert env_cfg.rewards.action_acceleration_scale_start == pytest.approx(-0.05)
-    assert env_cfg.rewards.action_acceleration_scale_end == pytest.approx(-2.0)
-    assert env_cfg.rewards.action_acceleration_schedule_start_timestep == 100_000
-    assert env_cfg.rewards.action_acceleration_schedule_end_timestep == 600_000
+    assert env_cfg.rewards.action_acceleration_scale_end == pytest.approx(-1.0)
+    assert env_cfg.rewards.action_acceleration_schedule_start_timestep == 200_000
+    assert env_cfg.rewards.action_acceleration_schedule_end_timestep == 700_000
+
+
+def test_coupled_actuator_pd_gains_are_softened_by_thirty_percent() -> None:
+    actuator_cfg = CBR_I_CONFIG.actuators["coupled_leg_actuator"]
+
+    assert actuator_cfg.stiffness == pytest.approx(73.3 * 0.7)
+    assert actuator_cfg.damping == pytest.approx(3.67 * 0.7)
