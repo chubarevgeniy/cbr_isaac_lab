@@ -179,9 +179,9 @@ class RewardCfg:
     # linearly changed between the two configured trainer timesteps, so early
     # learning is not dominated by action smoothing.
     action_acceleration_scale_start = -0.05
-    action_acceleration_scale_end = -1.0
-    action_acceleration_schedule_start_timestep = 200_000
-    action_acceleration_schedule_end_timestep = 700_000
+    action_acceleration_scale_end = -0.15
+    action_acceleration_schedule_start_timestep = 300_000
+    action_acceleration_schedule_end_timestep = 400_000
     joint_position_limits_scale = -5.0
     # The bounded action target may still pass a physical joint limit. Keep a
     # soft quadratic penalty for the amount requested beyond that limit.
@@ -190,7 +190,7 @@ class RewardCfg:
     # motor's effort limit. With four motors this term is bounded in [0, 4].
     # The selected weight intentionally applies stronger motor-effort
     # regularization than the previous target-position-error proxy.
-    motor_effort_scale = -0.05
+    motor_effort_scale = -0.2
     # Penalize horizontal foot motion near the ground. The exponential uses
     # the actual foot height in meters and is active outside sitting mode.
     foot_slip_scale = -0.5
@@ -257,7 +257,7 @@ class CbriisaaclabEnvCfg(DirectRLEnvCfg):
 
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2*2048, env_spacing=4.0, replicate_physics=True)
 
     # Sparse uneven ground. The first curriculum level is intentionally mild:
     # four 10 cm square bumps, each 2 cm high, in the annulus where the feet
